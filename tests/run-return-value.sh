@@ -5,7 +5,8 @@
 set -e
 cd "$(dirname "$0")/.."
 make -C compiler -q 2>/dev/null || make -C compiler
-./compiler/shu tests/return-value/main.su -o /tmp/shu_return_value 2>&1
+SHU=${SHU:-./compiler/shu}
+$SHU tests/return-value/main.su -o /tmp/shu_return_value 2>&1
 # 运行生成的可执行文件并捕获退出码（set -e 下非零会退出，故用 || 保存到变量）
 exitcode=0
 /tmp/shu_return_value >/dev/null 2>&1 || exitcode=$?

@@ -3,8 +3,9 @@
 set -e
 cd "$(dirname "$0")/.."
 make -C compiler -q 2>/dev/null || make -C compiler
+SHU=${SHU:-./compiler/shu}
 
-./compiler/shu -L . tests/builtin/main.su -o /tmp/shu_builtin 2>&1
+$SHU -L . tests/builtin/main.su -o /tmp/shu_builtin 2>&1
 exitcode=0; /tmp/shu_builtin >/dev/null 2>&1 || exitcode=$?
 [ "$exitcode" -ne 0 ] && { echo "expected exit 0 (core.builtin placeholder), got $exitcode"; exit 1; }
 

@@ -237,7 +237,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        image: [ alpine:latest, debian:bookworm-slim ]
+        image: [ alpine:3.23, debian:bookworm-slim ]
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -249,7 +249,7 @@ jobs:
       - name: Build and test in ${{ matrix.image }}
         timeout-minutes: 60
         run: |
-          docker run --rm -e CI=1 \
+          docker run --rm -e CI=1 -e SHU_CC_EXTRA="-std=gnu11" \
             -v "${{ github.workspace }}:/src" -w /src \
             ${{ matrix.image }} \
             sh -c '
@@ -258,6 +258,7 @@ jobs:
               else
                 apt-get update -qq && apt-get install -y -qq build-essential bash diffutils python3 liburing-dev zlib1g-dev libbrotli-dev
               fi &&
+              export SHU_CC_EXTRA="-std=gnu11" &&
               make -C compiler clean &&
               make -C compiler OPT=1 all &&
               make -C compiler test_c &&

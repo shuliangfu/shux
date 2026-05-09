@@ -3,8 +3,9 @@
 set -e
 cd "$(dirname "$0")/.."
 make -C compiler -q 2>/dev/null || make -C compiler
+SHU=${SHU:-./compiler/shu}
 
-./compiler/shu tests/return-expr/explicit.su -o /tmp/shu_return_explicit 2>&1
+$SHU tests/return-expr/explicit.su -o /tmp/shu_return_explicit 2>&1
 exitcode=0
 /tmp/shu_return_explicit >/dev/null 2>&1 || exitcode=$?
 [ "$exitcode" -ne 42 ] && { echo "expected 42 (explicit return), got $exitcode"; exit 1; }

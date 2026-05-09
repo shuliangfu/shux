@@ -240,8 +240,53 @@ function find_func_return_type_in_module(mod: *Module, mod_arena: *ASTArena, cal
   return 0;
 }
 
-/** 解析调用目标：先本模块，再 ctx.dep_modules(0..ctx.ndep-1)；callee_expr_ref 为 CALL 的 call_callee_ref。 */
+/** 在模块中按名字（字节+长度）查找函数，返回 return_type_ref；from_dep_index>=0 时通过 ctx 转成 caller_arena。供绑定/解构 import 解析调用。 */
+function find_func_return_type_in_module_by_name(mod: *Module, caller_arena: *ASTArena, name: *u8, name_len: i32, from_dep_index: i32, ctx: *PipelineDepCtx): i32 {
+  if (name_len <= 0 || name_len > 63) {
+    return 0;
+  }
+  let j: i32 = 0;
+  while (j < mod.num_funcs && j < 256) {
+    let f: Func = mod.funcs[j];
+    if (f.name_len == name_len && name_equal(f.name, f.name_len, name, name_len)) {
+      if (from_dep_index < 0) {
+        return f.return_type_ref;
+      }
+      return get_dep_return_type_in_caller_arena(from_dep_index, f.return_type_ref, caller_arena, ctx);
+    }
+    j = j + 1;
+  }
+  return 0;
+}
+
+/** 解析调用目标：先本模块，再 ctx.dep_modules(0..ctx.ndep-1)；callee_expr_ref 为 CALL 的 call_callee_ref。
+ * 支持绑定 import（const x = import path）：callee 为 EXPR_FIELD_ACCESS(base=VAR "x", field）时按 import_binding_name 找 dep 再按字段名找函数。
+ * 支持解构 import（const { f } = import path）：callee 为 EXPR_VAR 且 dep 的 import_kinds[i]==SELECT 且名字在 import_select_names 中时按该 dep 解析。 */
 function resolve_call_callee_return_type(module: *Module, arena: *ASTArena, callee_expr_ref: i32, ctx: *PipelineDepCtx): i32 {
+  if (callee_expr_ref <= 0 || callee_expr_ref > arena.num_exprs) {
+    return 0;
+  }
+  let callee: Expr = ast_arena_expr_get(arena, callee_expr_ref);
+  /* 绑定形式 process.getenv：callee 为 FIELD_ACCESS，base 为 VAR "process" */
+  if (callee.kind == ExprKind.EXPR_FIELD_ACCESS && callee.field_access_base_ref > 0 && callee.field_access_base_ref <= arena.num_exprs) {
+    let base: Expr = ast_arena_expr_get(arena, callee.field_access_base_ref);
+    if (base.kind == ExprKind.EXPR_VAR && base.var_name_len > 0 && base.var_name_len <= 63) {
+      let ii: i32 = 0;
+      while (ii < module.num_imports && ii < ctx.ndep && ii < 32) {
+        if (module.import_kinds[ii] == 1 && module.import_binding_name_len[ii] == base.var_name_len && name_equal(&module.import_binding_name[ii][0], module.import_binding_name_len[ii], base.var_name, base.var_name_len)) {
+          let dm: *Module = ctx.dep_modules[ii];
+          if (dm != 0 as *Module) {
+            let ret: i32 = find_func_return_type_in_module_by_name(dm, arena, callee.field_access_field_name, callee.field_access_field_len, ii, ctx);
+            if (ret != 0) {
+              return ret;
+            }
+          }
+          break;
+        }
+        ii = ii + 1;
+      }
+    }
+  }
   let minus_one: i32 = 0 - 1;
   let ret: i32 = find_func_return_type_in_module(module, arena, arena, arena, callee_expr_ref, minus_one, ctx);
   if (ret != 0) {
@@ -256,6 +301,22 @@ function resolve_call_callee_return_type(module: *Module, arena: *ASTArena, call
     ret = find_func_return_type_in_module(dm, arena, arena, arena, callee_expr_ref, i, ctx);
     if (ret != 0) {
       return ret;
+    }
+    /* 解构形式 const { getenv } = import std.process；裸名 getenv 在 dep i 的 import_select_names 中 */
+    if (i < module.num_imports && module.import_kinds[i] == 2 && callee.kind == ExprKind.EXPR_VAR && callee.var_name_len > 0) {
+      let k: i32 = 0;
+      while (k < module.import_select_count[i] && k < 8) {
+        if (module.import_select_name_lens[i][k] == callee.var_name_len && name_equal(&module.import_select_names[i][k][0], module.import_select_name_lens[i][k], callee.var_name, callee.var_name_len)) {
+          if (dm != 0 as *Module) {
+            ret = find_func_return_type_in_module_by_name(dm, arena, callee.var_name, callee.var_name_len, i, ctx);
+            if (ret != 0) {
+              return ret;
+            }
+          }
+          break;
+        }
+        k = k + 1;
+      }
     }
     i = i + 1;
   }
@@ -743,11 +804,11 @@ function check_block(module: *Module, arena: *ASTArena, block_ref: i32, return_t
  */
 function typeck_su_ast_impl(module: *Module, arena: *ASTArena, ctx: *PipelineDepCtx): i32 {
   let main_f: Func = module.funcs[module.main_func_index];
-  /* 仅当明确 is_extern==1 时报错（C/.su 布局或未初始化可能使该字段非 0） */
-  if (main_f.is_extern == 1) {
+  /* 仅当明确为 extern（is_extern==1 且无体）时报错；避免 C/.su 布局或未初始化使 is_extern 非 0 时误拒有体 main。 */
+  if (main_f.is_extern == 1 && ref_is_null(main_f.body_ref)) {
     return -1;
   }
-  if (ref_is_null(main_f.body_ref)) {
+  if (ref_is_null(main_f.body_ref) && ref_is_null(main_f.body_expr_ref)) {
     return -2;
   }
   if (ref_is_null(main_f.return_type_ref)) {

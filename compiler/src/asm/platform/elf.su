@@ -50,9 +50,9 @@ struct ElfCodegenCtx {
   num_labels: i32;
   patches: [128]ElfPatchEntry;
   num_patches: i32;
-  relocs: [32]ElfRelocEntry;
+  relocs: [128]ElfRelocEntry;
   num_relocs: i32;
-  syms: [16]ElfSymEntry;
+  syms: [256]ElfSymEntry;
   num_syms: i32;
   /** ELF e_machine：62=EM_X86_64，183=EM_AARCH64；write_elf_o_to_buf 写入 ehdr[18..19]。 */
   e_machine: i32;
@@ -132,7 +132,7 @@ function elf_add_patch_with_bits(ctx: *ElfCodegenCtx, rel32_offset: i32, name: [
 
 /** 记录重定位：offset 为 .text 内 rel32 位置，name 为符号名。 */
 function elf_add_reloc(ctx: *ElfCodegenCtx, offset: i32, name: [64]u8, name_len: i32): i32 {
-  if (ctx.num_relocs >= 32) {
+  if (ctx.num_relocs >= 128) {
     return -1;
   }
   ctx.relocs[ctx.num_relocs].offset = offset;
@@ -148,7 +148,7 @@ function elf_add_reloc(ctx: *ElfCodegenCtx, offset: i32, name: [64]u8, name_len:
 
 /** 记录导出符号（函数）：名称与在 .text 中的偏移。 */
 function elf_add_sym(ctx: *ElfCodegenCtx, name: [64]u8, name_len: i32, offset: i32): i32 {
-  if (ctx.num_syms >= 16) {
+  if (ctx.num_syms >= 256) {
     return -1;
   }
   let k: i32 = 0;

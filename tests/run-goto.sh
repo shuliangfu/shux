@@ -3,8 +3,9 @@
 set -e
 cd "$(dirname "$0")/.."
 make -C compiler -q 2>/dev/null || make -C compiler
+SHU=${SHU:-./compiler/shu}
 
-./compiler/shu tests/goto/main.su -o /tmp/shu_goto 2>&1
+$SHU tests/goto/main.su -o /tmp/shu_goto 2>&1
 exitcode=0; /tmp/shu_goto >/dev/null 2>&1 || exitcode=$?
 [ "$exitcode" -ne 42 ] && { echo "expected 42 (goto main), got $exitcode"; exit 1; }
 

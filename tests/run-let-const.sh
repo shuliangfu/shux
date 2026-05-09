@@ -6,9 +6,11 @@
 set -e
 cd "$(dirname "$0")/.."
 make -C compiler -q 2>/dev/null || make -C compiler
-# 构建 shu-c（C 流水线）供 let/const 退出码测试；无则用 shu
-make -C compiler shu-c -q 2>/dev/null || make -C compiler shu-c 2>/dev/null || true
-[ -x compiler/shu-c ] && SHU=./compiler/shu-c || SHU=./compiler/shu
+# 若 Makefile 已传入 SHU 则沿用；否则优先 shu-c，无则用 shu
+if [ -z "${SHU:-}" ]; then
+  make -C compiler shu-c -q 2>/dev/null || make -C compiler shu-c 2>/dev/null || true
+  [ -x compiler/shu-c ] && SHU=./compiler/shu-c || SHU=./compiler/shu
+fi
 
 # let x = 42; x -> 42
 $SHU tests/let-const/let_only.su -o /tmp/shu_let_only 2>&1

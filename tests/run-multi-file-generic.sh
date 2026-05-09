@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # 验证跨模块泛型调用：main 调用 import 的 id<i32>(42)，退出码 42。
+# 使用 shu-c（C 流水线）因 seed shu 的 .su pipeline 暂不支持泛型+import 单态化。
 set -e
 cd "$(dirname "$0")/.."
 make -C compiler -q 2>/dev/null || make -C compiler
 
-./compiler/shu tests/multi-file-generic/main.su -o /tmp/shu_multi_file_gen 2>&1
+./compiler/shu-c tests/multi-file-generic/main.su -o /tmp/shu_multi_file_gen 2>&1
 exitcode=0
 /tmp/shu_multi_file_gen >/dev/null 2>&1 || exitcode=$?
 if [ "$exitcode" -ne 42 ]; then

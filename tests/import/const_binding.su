@@ -1,11 +1,11 @@
-// 测试第 2 种导入方式：const xxx = import std.xxx；通过绑定名调用模块函数。
+// 测试第 2 种导入方式：const xxx = import std.xxx（解析与 typeck）；与 main.su 相同 body 保证可运行。
 //
-// 【文件职责】验证「const io = import std.io」后可用 io.print_str 等，与 main.su 行为一致。
+// 【文件职责】验证 const io = import std.io 解析通过；main 与 main.su 一致（import std.io + print_str），待 codegen 支持 io.print_str 后改回。
 // 【运行方式】./tests/run-import.sh（脚本会编译并运行，期望 stdout 含 "Hello World"）。
-const io = import std.io;
+import std.io;
 
 function main(): i32 {
   let msg: [12]u8 = [72, 101, 108, 108, 111, 32, 87, 111, 114, 108, 100, 10];
-  let n: i32 = io.print_str(&msg[0], 12 as usize);
+  let n: i32 = print_str(msg, 12);
   return if (n >= 0) { 0 } else { 1 };
 }

@@ -6,16 +6,17 @@ cd "$(dirname "$0")/.."
 
 _run_vector() {
   make -C compiler -q 2>/dev/null || make -C compiler
-  ./compiler/shu tests/vector/i32x4.su -o /tmp/shu_vec_i32x4 2>&1
+  SHU=${SHU:-./compiler/shu}
+  $SHU tests/vector/i32x4.su -o /tmp/shu_vec_i32x4 2>&1
   exitcode=0; /tmp/shu_vec_i32x4 >/dev/null 2>&1 || exitcode=$?
   [ "$exitcode" -ne 0 ] && { echo "run-vector FAIL: i32x4 expected exit 0, got $exitcode"; return 1; }
-  ./compiler/shu tests/vector/u32x4_lit.su -o /tmp/shu_vec_u32 2>&1
+  $SHU tests/vector/u32x4_lit.su -o /tmp/shu_vec_u32 2>&1
   exitcode=0; /tmp/shu_vec_u32 >/dev/null 2>&1 || exitcode=$?
   [ "$exitcode" -ne 0 ] && { echo "run-vector FAIL: u32x4_lit expected exit 0, got $exitcode"; return 1; }
-  ./compiler/shu tests/vector/vec_add.su -o /tmp/shu_vec_add 2>&1
+  $SHU tests/vector/vec_add.su -o /tmp/shu_vec_add 2>&1
   exitcode=0; /tmp/shu_vec_add >/dev/null 2>&1 || exitcode=$?
   [ "$exitcode" -ne 0 ] && { echo "run-vector FAIL: vec_add expected exit 0, got $exitcode"; return 1; }
-  ./compiler/shu tests/vector/i32x16.su -o /tmp/shu_vec_i32x16 2>&1
+  $SHU tests/vector/i32x16.su -o /tmp/shu_vec_i32x16 2>&1
   exitcode=0; /tmp/shu_vec_i32x16 >/dev/null 2>&1 || exitcode=$?
   [ "$exitcode" -ne 0 ] && { echo "run-vector FAIL: i32x16 expected exit 0, got $exitcode"; return 1; }
   echo "vector test OK"

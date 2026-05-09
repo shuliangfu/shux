@@ -9,9 +9,12 @@
 
 CC      ?= cc
 CFLAGS  ?= -Wall -Wextra -I. -Iinclude -Isrc
-# 仅编译 pipeline_gen.c 时加：生成代码难以逐处改，静默已知警告类别，使 bootstrap-driver 整次 0 警告
-# -Wno-logical-op-parentheses 等部分选项仅 Clang 支持，GCC 会报 unrecognized，无害；-Wno-ignored-qualifiers 与 -Wno-discarded-qualifiers 同义，Clang 用前者；-Wno-type-limits 静默 (pos < 0) 对 size_t 的警告
-PIPELINE_GEN_CFLAGS = -Wno-logical-op-parentheses -Wno-unused-variable -Wno-unused-parameter -Wno-unused-function -Wno-bitwise-op-parentheses -Wno-parentheses -Wno-sign-compare -Wno-incompatible-pointer-types-discards-qualifiers -Wno-ignored-qualifiers -Wno-unused-but-set-variable -Wno-type-limits
+# 仅编译 pipeline_gen.c / driver_gen.c 等生成代码时加：静默已知警告，使 bootstrap-driver 整次 0 警告
+# GCC 不识别 -Wno-logical-op-parentheses / -Wno-bitwise-op-parentheses / -Wno-incompatible-pointer-types-discards-qualifiers，会出 cc1 note；仅 Clang 追加
+PIPELINE_GEN_CFLAGS_BASE = -Wno-unused-variable -Wno-unused-parameter -Wno-unused-function -Wno-parentheses -Wno-sign-compare -Wno-ignored-qualifiers -Wno-unused-but-set-variable -Wno-type-limits
+PIPELINE_GEN_CFLAGS_CLANG = -Wno-logical-op-parentheses -Wno-bitwise-op-parentheses -Wno-incompatible-pointer-types-discards-qualifiers
+CC_IS_CLANG := $(findstring clang,$(shell $(CC) -v 2>&1))
+PIPELINE_GEN_CFLAGS = $(PIPELINE_GEN_CFLAGS_BASE) $(if $(CC_IS_CLANG),$(PIPELINE_GEN_CFLAGS_CLANG))
 # 阶段 8：make OPT=1 时为 shu 启用 -O2，便于开发时快速运行测试
 ifeq ($(OPT),1)
   CFLAGS += -O2
@@ -189,7 +192,9 @@ src/main_su.o: src/main.c
 PIPELINE_OBJS = src/main_su.o src/runtime_su.o src/preprocess.o src/lexer/lexer.o src/ast/ast.o src/parser/parser.o src/typeck/typeck.o src/codegen/codegen.o
 
 # asm 后端 -o <exe> 时链接用：提供 shulang_panic_；Linux 有 .s 时用 .s（syscall exit 不链 libc），否则用 .c；其它平台用 .c
+# Alpine 下汇编器与 GAS 行为不一致（不识别 .att_syntax / movl），故 Alpine 强制用 .c
 UNAME_S := $(shell uname -s 2>/dev/null || echo Unknown)
+ALPINE := $(shell test -f /etc/alpine-release && echo 1)
 # shu-su-pipeline 链接了 ../std/io/io.o；Linux 下 io.c 使用 io_uring，需 -luring -lpthread（见 std/io/io.c 头注释）
 PIPELINE_LIBS :=
 ifeq ($(UNAME_S),Linux)
@@ -198,8 +203,13 @@ endif
 RUNTIME_PANIC_S := $(wildcard src/asm/runtime_panic_x86_64.s)
 ifeq ($(UNAME_S),Linux)
 ifneq (,$(RUNTIME_PANIC_S))
+ifneq ($(ALPINE),1)
 runtime_panic.o: src/asm/runtime_panic_x86_64.s
 	$(CC) -c -o $@ $<
+else
+runtime_panic.o: src/asm/runtime_panic.c
+	$(CC) $(CFLAGS) -c -o $@ $<
+endif
 else
 runtime_panic.o: src/asm/runtime_panic.c
 	$(CC) $(CFLAGS) -c -o $@ $<
@@ -225,68 +235,70 @@ src/typeck/typeck_f64_bits.o: src/typeck/typeck_f64_bits.c
 endif
 
 clean:
-	rm -f $(OBJS) src/main_driver.o src/runtime_driver.o src/runtime_su.o src/main_su.o ../std/io/io.o ../std/fs/fs.o ../std/process/process.o ../std/string/string.o ../std/heap/heap.o ../std/runtime/runtime.o ../std/net/net.o ../std/thread/thread.o ../std/time/time.o ../std/random/random.o ../std/env/env.o ../std/sync/sync.o ../std/encoding/encoding.o ../std/base64/base64.o ../std/crypto/crypto.o ../std/log/log.o ../std/atomic/atomic.o ../std/channel/channel.o ../std/backtrace/backtrace.o ../std/hash/hash.o ../std/math/math.o ../std/sort/sort.o ../std/ffi/ffi.o ../std/json/json.o ../std/csv/csv.o ../std/regex/regex.o ../std/compress/compress.o ../std/unicode/unicode.o ../std/dynlib/dynlib.o ../std/http/http.o ../std/tar/tar.o ../std/test/test.o src/asm/runtime_asm_build.o src/asm/crt0_x86_64.o src/typeck/typeck_f64_bits.o $(TARGET) $(SHU_C) $(TARGET)_stage1 $(TARGET)_stage2 $(TARGET)_su $(TARGET)_su_stage2 typeck_gen.c typeck_su.o codegen_gen.c codegen_su.o parser_gen.c parser_su.o driver_gen.c driver_su.o pipeline_gen.c pipeline_su.o typeck_su_su.c typeck_su_su.o codegen_su_su.c codegen_su_su.o build_gen.c build_runner_gen.c build_runtime_su_gen.c build_tool.o build_runner.o build_runtime.o build_runtime_su.o build_tool runtime_panic.o shu_asm
+	rm -f $(OBJS) src/main_driver.o src/runtime_driver.o src/runtime_su.o src/main_su.o ../std/io/io.o ../std/fs/fs.o ../std/process/process.o ../std/string/string.o ../std/heap/heap.o ../std/runtime/runtime.o ../std/net/net.o ../std/thread/thread.o ../std/time/time.o ../std/random/random.o ../std/env/env.o ../std/sync/sync.o ../std/encoding/encoding.o ../std/base64/base64.o ../std/crypto/crypto.o ../std/log/log.o ../std/atomic/atomic.o ../std/channel/channel.o ../std/backtrace/backtrace.o ../std/hash/hash.o ../std/math/math.o ../std/sort/sort.o ../std/ffi/ffi.o ../std/json/json.o ../std/csv/csv.o ../std/regex/regex.o ../std/compress/compress.o ../std/unicode/unicode.o ../std/dynlib/dynlib.o ../std/http/http.o ../std/tar/tar.o ../std/test/test.o src/asm/runtime_asm_build.o src/asm/crt0_x86_64.o src/typeck/typeck_f64_bits.o src/lsp/lsp_state.o lsp_io_su.o lsp_su.o lsp_io_std_heap_su.o lsp_io_gen.c lsp_gen.c lsp_io_std_heap_gen.c $(TARGET) $(SHU_C) $(TARGET)_stage1 $(TARGET)_stage2 $(TARGET)_su $(TARGET)_su_stage2 typeck_gen.c typeck_su.o codegen_gen.c codegen_su.o parser_gen.c parser_su.o driver_gen.c driver_su.o pipeline_gen.c pipeline_su.o typeck_su_su.c typeck_su_su.o codegen_su_su.c codegen_su_su.o build_gen.c build_runner_gen.c build_runtime_su_gen.c build_tool.o build_runner.o build_runtime.o build_runtime_su.o build_tool runtime_panic.o shu_asm
 	rm -rf build_asm
 
 # 阶段 1 词法 + 阶段 3 类型检查 + …；依赖 shu 与全部 std .o、runtime_panic.o，clean 后 test 会先构建再跑脚本
 # test_c：仅 C 路径（run-*.sh 用 shu/shu-c，不含自举）；test_su：仅 su 自举（bootstrap-driver-seed + run-lsp）
-test_c: $(TARGET) $(STD_AND_PANIC_O)
-	@if [ -f ../tests/run-lexer.sh ]; then (cd .. && ./tests/run-lexer.sh); fi
-	@if [ -f ../tests/run-typeck.sh ]; then (cd .. && chmod +x tests/run-typeck.sh && ./tests/run-typeck.sh); fi
-	@if [ -f ../tests/run-hello.sh ]; then (cd .. && chmod +x tests/run-hello.sh && ./tests/run-hello.sh); fi
-	@if [ -f ../tests/run-import.sh ]; then (cd .. && chmod +x tests/run-import.sh && ./tests/run-import.sh); fi
-	@if [ -f ../tests/run-std.sh ]; then (cd .. && chmod +x tests/run-std.sh && ./tests/run-std.sh); fi
-	@if [ -f ../tests/run-stdlib-import.sh ]; then (cd .. && chmod +x tests/run-stdlib-import.sh && ./tests/run-stdlib-import.sh); fi
-	@if [ -f ../tests/run-target.sh ]; then (cd .. && chmod +x tests/run-target.sh && ./tests/run-target.sh); fi
-	@if [ -f ../tests/run-return-value.sh ]; then (cd .. && chmod +x tests/run-return-value.sh && ./tests/run-return-value.sh); fi
-	@if [ -f ../tests/run-multi-func.sh ]; then (cd .. && chmod +x tests/run-multi-func.sh && ./tests/run-multi-func.sh); fi
-	@if [ -f ../tests/run-generic.sh ]; then (cd .. && chmod +x tests/run-generic.sh && ./tests/run-generic.sh); fi
-	@if [ -f ../tests/run-trait.sh ]; then (cd .. && chmod +x tests/run-trait.sh && ./tests/run-trait.sh); fi
-	@if [ -f ../tests/run-multi-file.sh ]; then (cd .. && chmod +x tests/run-multi-file.sh && ./tests/run-multi-file.sh); fi
-	@if [ -f ../tests/run-multi-file-generic.sh ]; then (cd .. && chmod +x tests/run-multi-file-generic.sh && ./tests/run-multi-file-generic.sh); fi
-	@if [ -f ../tests/run-binary-expr.sh ]; then (cd .. && chmod +x tests/run-binary-expr.sh && ./tests/run-binary-expr.sh); fi
-	@if [ -f ../tests/run-let-const.sh ]; then (cd .. && chmod +x tests/run-let-const.sh && ./tests/run-let-const.sh); fi
-	@if [ -f ../tests/run-bool.sh ]; then (cd .. && chmod +x tests/run-bool.sh && ./tests/run-bool.sh); fi
-	@if [ -f ../tests/run-if-expr.sh ]; then (cd .. && chmod +x tests/run-if-expr.sh && ./tests/run-if-expr.sh); fi
-	@if [ -f ../tests/run-ternary.sh ]; then (cd .. && chmod +x tests/run-ternary.sh && ./tests/run-ternary.sh); fi
-	@if [ -f ../tests/run-option.sh ]; then (cd .. && chmod +x tests/run-option.sh && ./tests/run-option.sh); fi
-	@if [ -f ../tests/run-result.sh ]; then (cd .. && chmod +x tests/run-result.sh && ./tests/run-result.sh); fi
-	@if [ -f ../tests/run-process.sh ]; then (cd .. && chmod +x tests/run-process.sh && ./tests/run-process.sh); fi
-	@if [ -f ../tests/run-io.sh ]; then (cd .. && chmod +x tests/run-io.sh && ./tests/run-io.sh); fi
-	@if [ -f ../tests/run-while.sh ]; then (cd .. && chmod +x tests/run-while.sh && ./tests/run-while.sh); fi
-	@if [ -f ../tests/run-return-expr.sh ]; then (cd .. && chmod +x tests/run-return-expr.sh && ./tests/run-return-expr.sh); fi
-	@if [ -f ../tests/run-for.sh ]; then (cd .. && chmod +x tests/run-for.sh && ./tests/run-for.sh); fi
-	@if [ -f ../tests/run-float.sh ]; then (cd .. && chmod +x tests/run-float.sh && ./tests/run-float.sh); fi
-	@if [ -f ../tests/run-parser.sh ]; then (cd .. && chmod +x tests/run-parser.sh && ./tests/run-parser.sh); fi
-	@if [ -f ../tests/run-struct.sh ]; then (cd .. && chmod +x tests/run-struct.sh && ./tests/run-struct.sh); fi
-	@if [ -f ../tests/run-slice.sh ]; then (cd .. && chmod +x tests/run-slice.sh && ./tests/run-slice.sh); fi
-	@if [ -f ../tests/run-array.sh ]; then (cd .. && chmod +x tests/run-array.sh && ./tests/run-array.sh); fi
-	@if [ -f ../tests/run-pointer.sh ]; then (cd .. && chmod +x tests/run-pointer.sh && ./tests/run-pointer.sh); fi
-	@if [ -f ../tests/run-enum.sh ]; then (cd .. && chmod +x tests/run-enum.sh && ./tests/run-enum.sh); fi
-	@if [ -f ../tests/run-match.sh ]; then (cd .. && chmod +x tests/run-match.sh && ./tests/run-match.sh); fi
-	@if [ -f ../tests/run-panic.sh ]; then (cd .. && chmod +x tests/run-panic.sh && ./tests/run-panic.sh); fi
-	@if [ -f ../tests/run-defer.sh ]; then (cd .. && chmod +x tests/run-defer.sh && ./tests/run-defer.sh); fi
-	@if [ -f ../tests/run-goto.sh ]; then (cd .. && chmod +x tests/run-goto.sh && ./tests/run-goto.sh); fi
-	@if [ -f ../tests/run-preprocess.sh ]; then (cd .. && chmod +x tests/run-preprocess.sh && ./tests/run-preprocess.sh); fi
+# 各脚本通过 SHU=./compiler/shu-c 使用 C 流水线，避免 seed shu 的 .su pipeline 对 Option/Result/二元减等生成错误 C
+# 依赖 $(SHU_C) 以便 make clean && make test_c 时 shu-c 存在，run-typeck 等脚本不会报 No such file
+test_c: $(TARGET) $(SHU_C) $(STD_AND_PANIC_O)
+	@if [ -f ../tests/run-lexer.sh ]; then (cd .. && SHU=./compiler/shu-c ./tests/run-lexer.sh); fi
+	@if [ -f ../tests/run-typeck.sh ]; then (cd .. && chmod +x tests/run-typeck.sh && SHU=./compiler/shu-c ./tests/run-typeck.sh); fi
+	@if [ -f ../tests/run-hello.sh ]; then (cd .. && chmod +x tests/run-hello.sh && SHU=./compiler/shu-c ./tests/run-hello.sh); fi
+	@if [ -f ../tests/run-import.sh ]; then (cd .. && chmod +x tests/run-import.sh && SHU=./compiler/shu-c ./tests/run-import.sh); fi
+	@if [ -f ../tests/run-std.sh ]; then (cd .. && chmod +x tests/run-std.sh && SHU=./compiler/shu-c ./tests/run-std.sh); fi
+	@if [ -f ../tests/run-stdlib-import.sh ]; then (cd .. && chmod +x tests/run-stdlib-import.sh && SHU=./compiler/shu-c ./tests/run-stdlib-import.sh); fi
+	@if [ -f ../tests/run-target.sh ]; then (cd .. && chmod +x tests/run-target.sh && SHU=./compiler/shu-c ./tests/run-target.sh); fi
+	@if [ -f ../tests/run-return-value.sh ]; then (cd .. && chmod +x tests/run-return-value.sh && SHU=./compiler/shu-c ./tests/run-return-value.sh); fi
+	@if [ -f ../tests/run-multi-func.sh ]; then (cd .. && chmod +x tests/run-multi-func.sh && SHU=./compiler/shu-c ./tests/run-multi-func.sh); fi
+	@if [ -f ../tests/run-generic.sh ]; then (cd .. && chmod +x tests/run-generic.sh && SHU=./compiler/shu-c ./tests/run-generic.sh); fi
+	@if [ -f ../tests/run-trait.sh ]; then (cd .. && chmod +x tests/run-trait.sh && SHU=./compiler/shu-c ./tests/run-trait.sh); fi
+	@if [ -f ../tests/run-multi-file.sh ]; then (cd .. && chmod +x tests/run-multi-file.sh && SHU=./compiler/shu-c ./tests/run-multi-file.sh); fi
+	@if [ -f ../tests/run-multi-file-generic.sh ]; then (cd .. && chmod +x tests/run-multi-file-generic.sh && SHU=./compiler/shu-c ./tests/run-multi-file-generic.sh); fi
+	@if [ -f ../tests/run-binary-expr.sh ]; then (cd .. && chmod +x tests/run-binary-expr.sh && SHU=./compiler/shu-c ./tests/run-binary-expr.sh); fi
+	@if [ -f ../tests/run-let-const.sh ]; then (cd .. && chmod +x tests/run-let-const.sh && SHU=./compiler/shu-c ./tests/run-let-const.sh); fi
+	@if [ -f ../tests/run-bool.sh ]; then (cd .. && chmod +x tests/run-bool.sh && SHU=./compiler/shu-c ./tests/run-bool.sh); fi
+	@if [ -f ../tests/run-if-expr.sh ]; then (cd .. && chmod +x tests/run-if-expr.sh && SHU=./compiler/shu-c ./tests/run-if-expr.sh); fi
+	@if [ -f ../tests/run-ternary.sh ]; then (cd .. && chmod +x tests/run-ternary.sh && SHU=./compiler/shu-c ./tests/run-ternary.sh); fi
+	@if [ -f ../tests/run-option.sh ]; then (cd .. && chmod +x tests/run-option.sh && SHU=./compiler/shu-c ./tests/run-option.sh); fi
+	@if [ -f ../tests/run-result.sh ]; then (cd .. && chmod +x tests/run-result.sh && SHU=./compiler/shu-c ./tests/run-result.sh); fi
+	@if [ -f ../tests/run-process.sh ]; then (cd .. && chmod +x tests/run-process.sh && SHU=./compiler/shu-c ./tests/run-process.sh); fi
+	@if [ -f ../tests/run-io.sh ]; then (cd .. && chmod +x tests/run-io.sh && SHU=./compiler/shu-c ./tests/run-io.sh); fi
+	@if [ -f ../tests/run-while.sh ]; then (cd .. && chmod +x tests/run-while.sh && SHU=./compiler/shu-c ./tests/run-while.sh); fi
+	@if [ -f ../tests/run-return-expr.sh ]; then (cd .. && chmod +x tests/run-return-expr.sh && SHU=./compiler/shu-c ./tests/run-return-expr.sh); fi
+	@if [ -f ../tests/run-for.sh ]; then (cd .. && chmod +x tests/run-for.sh && SHU=./compiler/shu-c ./tests/run-for.sh); fi
+	@if [ -f ../tests/run-float.sh ]; then (cd .. && chmod +x tests/run-float.sh && SHU=./compiler/shu-c ./tests/run-float.sh); fi
+	@if [ -f ../tests/run-parser.sh ]; then (cd .. && chmod +x tests/run-parser.sh && SHU=./compiler/shu-c ./tests/run-parser.sh); fi
+	@if [ -f ../tests/run-struct.sh ]; then (cd .. && chmod +x tests/run-struct.sh && SHU=./compiler/shu-c ./tests/run-struct.sh); fi
+	@if [ -f ../tests/run-slice.sh ]; then (cd .. && chmod +x tests/run-slice.sh && SHU=./compiler/shu-c ./tests/run-slice.sh); fi
+	@if [ -f ../tests/run-array.sh ]; then (cd .. && chmod +x tests/run-array.sh && SHU=./compiler/shu-c ./tests/run-array.sh); fi
+	@if [ -f ../tests/run-pointer.sh ]; then (cd .. && chmod +x tests/run-pointer.sh && SHU=./compiler/shu-c ./tests/run-pointer.sh); fi
+	@if [ -f ../tests/run-enum.sh ]; then (cd .. && chmod +x tests/run-enum.sh && SHU=./compiler/shu-c ./tests/run-enum.sh); fi
+	@if [ -f ../tests/run-match.sh ]; then (cd .. && chmod +x tests/run-match.sh && SHU=./compiler/shu-c ./tests/run-match.sh); fi
+	@if [ -f ../tests/run-panic.sh ]; then (cd .. && chmod +x tests/run-panic.sh && SHU=./compiler/shu-c ./tests/run-panic.sh); fi
+	@if [ -f ../tests/run-defer.sh ]; then (cd .. && chmod +x tests/run-defer.sh && SHU=./compiler/shu-c ./tests/run-defer.sh); fi
+	@if [ -f ../tests/run-goto.sh ]; then (cd .. && chmod +x tests/run-goto.sh && SHU=./compiler/shu-c ./tests/run-goto.sh); fi
+	@if [ -f ../tests/run-preprocess.sh ]; then (cd .. && chmod +x tests/run-preprocess.sh && SHU=./compiler/shu-c ./tests/run-preprocess.sh); fi
 	# 自举测试不跑，已从 test 目标中排除（run-su-pipeline / run-asm / run-without-c 等均不执行）
-	@if [ -f ../tests/run-vector.sh ]; then (cd .. && chmod +x tests/run-vector.sh && ./tests/run-vector.sh); fi
-	@if [ -f ../tests/run-fmt.sh ]; then (cd .. && chmod +x tests/run-fmt.sh && ./tests/run-fmt.sh); fi
-	@if [ -f ../tests/run-debug.sh ]; then (cd .. && chmod +x tests/run-debug.sh && ./tests/run-debug.sh); fi
-	@if [ -f ../tests/run-core-types.sh ]; then (cd .. && chmod +x tests/run-core-types.sh && ./tests/run-core-types.sh); fi
-	@if [ -f ../tests/run-builtin.sh ]; then (cd .. && chmod +x tests/run-builtin.sh && ./tests/run-builtin.sh); fi
-	@if [ -f ../tests/run-mem.sh ]; then (cd .. && chmod +x tests/run-mem.sh && ./tests/run-mem.sh); fi
-	@if [ -f ../tests/run-string.sh ]; then (cd .. && chmod +x tests/run-string.sh && ./tests/run-string.sh); fi
-	@if [ -f ../tests/run-vec.sh ]; then (cd .. && chmod +x tests/run-vec.sh && ./tests/run-vec.sh); fi
-	@if [ -f ../tests/run-heap.sh ]; then (cd .. && chmod +x tests/run-heap.sh && ./tests/run-heap.sh); fi
-	@if [ -f ../tests/run-runtime.sh ]; then (cd .. && chmod +x tests/run-runtime.sh && ./tests/run-runtime.sh); fi
-	@if [ -f ../tests/run-fs.sh ]; then (cd .. && chmod +x tests/run-fs.sh && ./tests/run-fs.sh); fi
-	@if [ -f ../tests/run-path.sh ]; then (cd .. && chmod +x tests/run-path.sh && ./tests/run-path.sh); fi
-	@if [ -f ../tests/run-map.sh ]; then (cd .. && chmod +x tests/run-map.sh && ./tests/run-map.sh); fi
-	@if [ -f ../tests/run-error.sh ]; then (cd .. && chmod +x tests/run-error.sh && ./tests/run-error.sh); fi
-	@if [ -f ../tests/run-net.sh ]; then (cd .. && chmod +x tests/run-net.sh && ./tests/run-net.sh); fi
-	@if [ -f ../tests/run-io-driver.sh ]; then (cd .. && chmod +x tests/run-io-driver.sh && ./tests/run-io-driver.sh); fi
-	@if [ -f ../tests/run-ub.sh ]; then (cd .. && chmod +x tests/run-ub.sh && ./tests/run-ub.sh); fi
-	@if [ -f ../tests/run-abi-layout.sh ]; then (cd .. && chmod +x tests/run-abi-layout.sh && ./tests/run-abi-layout.sh); fi
+	@if [ -f ../tests/run-vector.sh ]; then (cd .. && chmod +x tests/run-vector.sh && SHU=./compiler/shu-c ./tests/run-vector.sh); fi
+	@if [ -f ../tests/run-fmt.sh ]; then (cd .. && chmod +x tests/run-fmt.sh && SHU=./compiler/shu-c ./tests/run-fmt.sh); fi
+	@if [ -f ../tests/run-debug.sh ]; then (cd .. && chmod +x tests/run-debug.sh && SHU=./compiler/shu-c ./tests/run-debug.sh); fi
+	@if [ -f ../tests/run-core-types.sh ]; then (cd .. && chmod +x tests/run-core-types.sh && SHU=./compiler/shu-c ./tests/run-core-types.sh); fi
+	@if [ -f ../tests/run-builtin.sh ]; then (cd .. && chmod +x tests/run-builtin.sh && SHU=./compiler/shu-c ./tests/run-builtin.sh); fi
+	@if [ -f ../tests/run-mem.sh ]; then (cd .. && chmod +x tests/run-mem.sh && SHU=./compiler/shu-c ./tests/run-mem.sh); fi
+	@if [ -f ../tests/run-string.sh ]; then (cd .. && chmod +x tests/run-string.sh && SHU=./compiler/shu-c ./tests/run-string.sh); fi
+	@if [ -f ../tests/run-vec.sh ]; then (cd .. && chmod +x tests/run-vec.sh && SHU=./compiler/shu-c ./tests/run-vec.sh); fi
+	@if [ -f ../tests/run-heap.sh ]; then (cd .. && chmod +x tests/run-heap.sh && SHU=./compiler/shu-c ./tests/run-heap.sh); fi
+	@if [ -f ../tests/run-runtime.sh ]; then (cd .. && chmod +x tests/run-runtime.sh && SHU=./compiler/shu-c ./tests/run-runtime.sh); fi
+	@if [ -f ../tests/run-fs.sh ]; then (cd .. && chmod +x tests/run-fs.sh && SHU=./compiler/shu-c ./tests/run-fs.sh); fi
+	@if [ -f ../tests/run-path.sh ]; then (cd .. && chmod +x tests/run-path.sh && SHU=./compiler/shu-c ./tests/run-path.sh); fi
+	@if [ -f ../tests/run-map.sh ]; then (cd .. && chmod +x tests/run-map.sh && SHU=./compiler/shu-c ./tests/run-map.sh); fi
+	@if [ -f ../tests/run-error.sh ]; then (cd .. && chmod +x tests/run-error.sh && SHU=./compiler/shu-c ./tests/run-error.sh); fi
+	@if [ -f ../tests/run-net.sh ]; then (cd .. && chmod +x tests/run-net.sh && SHU=./compiler/shu-c ./tests/run-net.sh); fi
+	@if [ -f ../tests/run-io-driver.sh ]; then (cd .. && chmod +x tests/run-io-driver.sh && SHU=./compiler/shu-c ./tests/run-io-driver.sh); fi
+	@if [ -f ../tests/run-ub.sh ]; then (cd .. && chmod +x tests/run-ub.sh && SHU=./compiler/shu-c ./tests/run-ub.sh); fi
+	@if [ -f ../tests/run-abi-layout.sh ]; then (cd .. && chmod +x tests/run-abi-layout.sh && SHU=./compiler/shu-c ./tests/run-abi-layout.sh); fi
 	@echo "Test C OK"
 
 # su 自举：bootstrap-driver-seed + LSP + 全量自举（run-all-su：用 shu_su 跑整份 run-all）
@@ -391,7 +403,7 @@ bootstrap-driver-seed: $(TARGET) $(SHU_C) pipeline_gen.c lsp_io_gen.c lsp_gen.c 
 	$(CC) $(CFLAGS) $(PIPELINE_GEN_CFLAGS) -I. -include src/lsp/lsp_io_extern.h -Dstd_io_read=io_read -Dstd_io_write=io_write -c lsp_io_gen.c -o lsp_io_su.o
 	$(CC) $(CFLAGS) $(PIPELINE_GEN_CFLAGS) -I. -include src/lsp/lsp_gen_extern.h -c lsp_gen.c -o lsp_su.o
 	./$(SHU_C) -L .. -L src/lsp -L src/lexer -L src/ast -L src/parser -L src/typeck -L src/codegen -L src/preprocess src/main.su -E -E-extern > driver_gen.c
-	$(CC) $(CFLAGS) -Dstd_fs_fs_read=fs_posix_read_c -Dstd_fs_fs_write=fs_posix_write_c -Dstd_fs_fs_close=fs_posix_close_c -c driver_gen.c -o driver_su.o
+	$(CC) $(CFLAGS) $(PIPELINE_GEN_CFLAGS) -Dstd_fs_fs_read=fs_posix_read_c -Dstd_fs_fs_write=fs_posix_write_c -Dstd_fs_fs_close=fs_posix_close_c -c driver_gen.c -o driver_su.o
 	$(CC) $(CFLAGS) -DSHU_USE_SU_DRIVER -DSHU_USE_SU_PIPELINE -o $(TARGET) $(DRIVER_SEED_OBJS) driver_su.o pipeline_su.o lsp_su.o lsp_io_su.o src/lsp/lsp_diag.o src/lsp/lsp_state.o lsp_io_std_heap_su.o ../std/fs/fs.o ../std/io/io.o ../std/heap/heap.o $(PIPELINE_LIBS)
 	@echo "bootstrap-driver-seed OK (shu from generated C)"
 
@@ -463,7 +475,7 @@ bootstrap-self: bootstrap-driver-seed
 	$(CC) $(CFLAGS) $(PIPELINE_GEN_CFLAGS) -I. -include src/lsp/lsp_gen_extern.h -c lsp_gen.c -o lsp_su.o && \
 	$(CC) $(CFLAGS) $(PIPELINE_GEN_CFLAGS) -I. -Iinclude -Isrc -c lsp_io_std_heap_gen.c -o lsp_io_std_heap_su.o && \
 	./$(SHU_C) -L .. -L src/lsp -L src/lexer -L src/ast -L src/parser -L src/typeck -L src/codegen -L src/preprocess src/main.su -E -E-extern > driver_gen.c && \
-	$(CC) $(CFLAGS) -Dstd_fs_fs_read=fs_posix_read_c -Dstd_fs_fs_write=fs_posix_write_c -Dstd_fs_fs_close=fs_posix_close_c -c driver_gen.c -o driver_su.o && \
+	$(CC) $(CFLAGS) $(PIPELINE_GEN_CFLAGS) -Dstd_fs_fs_read=fs_posix_read_c -Dstd_fs_fs_write=fs_posix_write_c -Dstd_fs_fs_close=fs_posix_close_c -c driver_gen.c -o driver_su.o && \
 	$(CC) $(CFLAGS) -DSHU_USE_SU_DRIVER -DSHU_USE_SU_PIPELINE -o $(TARGET)_stage2 $(DRIVER_SEED_OBJS) driver_su.o pipeline_su.o lsp_su.o lsp_io_su.o src/lsp/lsp_diag.o src/lsp/lsp_state.o lsp_io_std_heap_su.o ../std/fs/fs.o ../std/io/io.o ../std/heap/heap.o $(PIPELINE_LIBS) && \
 	./$(TARGET)_stage2 ../tests/return-value/main.su -o /tmp/out_self && /tmp/out_self; EX=$$?; [ $$EX -eq 42 ] && echo "bootstrap-self OK (shu1 -> shu2)" || (echo "bootstrap-self FAIL: stage2 or out_self exit=$$EX"; exit 1)
 
@@ -517,8 +529,8 @@ bootstrap-verify: check-7.2
 
 # 阶段 8 体积基线：编译固定用例并输出可执行文件大小
 size-baseline:
-	@if [ -f ../tests/run-size-baseline.sh ]; then (cd .. && chmod +x tests/run-size-baseline.sh && ./tests/run-size-baseline.sh); fi
+	@if [ -f ../tests/run-size-baseline.sh ]; then (cd .. && chmod +x tests/run-size-baseline.sh && SHU=./compiler/shu-c ./tests/run-size-baseline.sh); fi
 
 # 阶段 8 性能基线：编译并多次运行 perf-baseline，输出耗时
 perf-baseline:
-	@if [ -f ../tests/run-perf-baseline.sh ]; then (cd .. && chmod +x tests/run-perf-baseline.sh && ./tests/run-perf-baseline.sh); fi
+	@if [ -f ../tests/run-perf-baseline.sh ]; then (cd .. && chmod +x tests/run-perf-baseline.sh && SHU=./compiler/shu-c ./tests/run-perf-baseline.sh); fi

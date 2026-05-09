@@ -3,9 +3,10 @@
 set -e
 cd "$(dirname "$0")/.."
 make -C compiler -q 2>/dev/null || make -C compiler
+SHU=${SHU:-./compiler/shu}
 
-./compiler/shu tests/panic/main.su -o /tmp/shu_panic 2>&1
-./compiler/shu tests/panic/with_msg.su -o /tmp/shu_panic_msg 2>&1
+$SHU tests/panic/main.su -o /tmp/shu_panic 2>&1
+$SHU tests/panic/with_msg.su -o /tmp/shu_panic_msg 2>&1
 # 运行预期非 0 退出（abort）；整组命令 stderr 重定向，尽量抑制 shell 打印 "Abort trap: 6"
 exitcode=0; { ( /tmp/shu_panic 2>/dev/null ) 2>/dev/null || exitcode=$?; } 2>/dev/null
 [ "$exitcode" -eq 0 ] && { echo "expected non-zero exit (panic abort)"; exit 1; }

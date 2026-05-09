@@ -3,16 +3,17 @@
 set -e
 cd "$(dirname "$0")/.."
 make -C compiler -q 2>/dev/null || make -C compiler
+SHU=${SHU:-./compiler/shu}
 
-./compiler/shu tests/enum/minimal.su -o /tmp/shu_enum_min 2>&1
+$SHU tests/enum/minimal.su -o /tmp/shu_enum_min 2>&1
 exitcode=0; /tmp/shu_enum_min >/dev/null 2>&1 || exitcode=$?
 [ "$exitcode" -ne 0 ] && { echo "expected 0 (enum minimal), got $exitcode"; exit 1; }
 
-./compiler/shu tests/enum/simple.su -o /tmp/shu_enum_simple 2>&1
+$SHU tests/enum/simple.su -o /tmp/shu_enum_simple 2>&1
 exitcode=0; /tmp/shu_enum_simple >/dev/null 2>&1 || exitcode=$?
 [ "$exitcode" -ne 1 ] && { echo "expected 1 (enum simple), got $exitcode"; exit 1; }
 
-./compiler/shu tests/enum/match.su -o /tmp/shu_enum_match 2>&1
+$SHU tests/enum/match.su -o /tmp/shu_enum_match 2>&1
 exitcode=0; /tmp/shu_enum_match >/dev/null 2>&1 || exitcode=$?
 [ "$exitcode" -ne 1 ] && { echo "expected 1 (enum match Color.Green), got $exitcode"; exit 1; }
 

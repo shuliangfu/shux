@@ -2,7 +2,7 @@
 # 运行 UB 收窄测试：除零、越界应 panic（exit 134 = SIGABRT），正常路径应正常返回
 set -e
 cd "$(dirname "$0")/.."
-SHU="./compiler/shu"
+SHU="${SHU:-./compiler/shu}"
 run_panic() {
     $SHU "$1" -o /tmp/ub_test 2>/dev/null || exit 1
     set +e; { ( /tmp/ub_test 2>/dev/null ) 2>/dev/null; r=$?; } 2>/dev/null; set -e

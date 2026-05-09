@@ -4,9 +4,10 @@
 set -e
 cd "$(dirname "$0")/.."
 make -C compiler -q 2>/dev/null || make -C compiler
+SHU=${SHU:-./compiler/shu}
 
 _run_debug() {
-  ./compiler/shu -L . tests/debug/main.su -o /tmp/shu_debug 2>&1
+  $SHU -L . tests/debug/main.su -o /tmp/shu_debug 2>&1
   exitcode=0; /tmp/shu_debug >/dev/null 2>&1 || exitcode=$?
   [ "$exitcode" -ne 0 ] && { echo "expected exit 0 (assert(true)), got $exitcode"; return 1; }
   echo "debug test OK"

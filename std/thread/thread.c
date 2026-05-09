@@ -234,3 +234,13 @@ void *thread_dummy_entry(void *arg) {
 uintptr_t thread_dummy_entry_ptr_c(void) {
     return (uintptr_t)&thread_dummy_entry;
 }
+
+/* ——— .su pipeline 用：codegen 对 std.thread 生成 std_thread_*_c 符号，与 thread.o 链接 ——— */
+int64_t std_thread_thread_self_c(void) { return thread_self_c(); }
+int64_t std_thread_thread_create_c(void *entry, void *arg) { return thread_create_c(entry, arg); }
+int64_t std_thread_thread_create_with_stack_c(void *entry, void *arg, size_t stack_size) { return thread_create_with_stack_c(entry, arg, stack_size); }
+int32_t std_thread_thread_join_c(int64_t thread_id) { return thread_join_c(thread_id); }
+int32_t std_thread_thread_set_affinity_self_c(int32_t cpu_index) { return thread_set_affinity_self_c(cpu_index); }
+int32_t std_thread_thread_set_affinity_c(int64_t thread_id, int32_t cpu_index) { return thread_set_affinity_c(thread_id, cpu_index); }
+int32_t std_thread_thread_set_qos_class_self_c(int32_t qos_class) { return thread_set_qos_class_self_c(qos_class); }
+uintptr_t std_thread_thread_dummy_entry_ptr_c(void) { return thread_dummy_entry_ptr_c(); }

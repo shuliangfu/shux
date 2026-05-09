@@ -7,8 +7,8 @@
 set -e
 cd "$(dirname "$0")/.."
 if [ -n "$SHU" ]; then
-  # test_su 路径：用当前 compiler/shu（已为 shu_su），不碰 shu-c；仅跑与 pipeline 兼容的用例
-  LEXER_SHU=./compiler/shu
+  # test_c 传 SHU=./compiler/shu-c 时用其跑负例；test_su 传 SHU=./compiler/shu 时用 shu_su
+  LEXER_SHU="$SHU"
   out=$(mktemp)
   "$LEXER_SHU" tests/lexer/invalid_char.su -o /tmp/shu_lexer_fail 2>/dev/null && { echo "lexer: expected compile failure for invalid char"; exit 1; }
   rm -f "$out"
@@ -26,6 +26,6 @@ else
   "$LEXER_SHU" tests/lexer/comments.su > "$out"
   diff -u --strip-trailing-cr tests/lexer/expected-comments.txt "$out" || exit 1
   rm -f "$out"
-  ./compiler/shu tests/lexer/invalid_char.su -o /tmp/shu_lexer_fail 2>/dev/null && { echo "lexer: expected compile failure for invalid char"; exit 1; }
+  "$LEXER_SHU" tests/lexer/invalid_char.su -o /tmp/shu_lexer_fail 2>/dev/null && { echo "lexer: expected compile failure for invalid char"; exit 1; }
 fi
 echo "lexer test OK"

@@ -282,7 +282,7 @@ int net_connect_many_c(uint32_t addr_u32, uint32_t port_u32, int32_t *out_fds, i
 
 /* 前向声明：worker 内调用的接口在文件后部定义 */
 extern int net_accept_many_c(int32_t listener_fd, int32_t *out_fds, int n, uint32_t timeout_ms);
-extern int32_t net_close_socket_c(int32_t fd);
+extern int32_t net_close_socket_c_real(int32_t fd);
 
 /* 可选：链接 std.thread 时每 worker 绑核；未链 thread.o 时为弱符号 0，不调用。仅 GCC/Clang 支持 weak。 */
 #if defined(__GNUC__) || defined(__clang__)
@@ -306,7 +306,7 @@ static void *shu_net_worker_accept_loop(void *arg) {
         int n = net_accept_many_c(a->listener_fd, fds, SHU_NET_ACCEPT_BATCH, a->timeout_ms);
         int i;
         for (i = 0; i < n; i++)
-            (void)net_close_socket_c(fds[i]);
+            (void)net_close_socket_c_real(fds[i]);
     }
     return NULL;
 }
@@ -323,7 +323,7 @@ static DWORD WINAPI shu_net_thread_wrap(LPVOID arg) {
  * 主线程会阻塞直至 join 所有 worker（即永不返回）；失败返回 -1（如 listener_fd 无效、n_workers<=0 或 >64、线程创建失败）。
  * timeout_ms 为每次 accept_many 的超时（建议 5000）；n_workers 建议与核数一致，每线程一 io_uring（Linux）。
  */
-int32_t net_run_accept_workers_c(int32_t listener_fd, int32_t n_workers, uint32_t timeout_ms) {
+int32_t net_run_accept_workers_c_real(int32_t listener_fd, int32_t n_workers, uint32_t timeout_ms) {
     if (listener_fd < 0 || n_workers <= 0) return -1;
     if (n_workers > SHU_NET_MAX_WORKERS) n_workers = SHU_NET_MAX_WORKERS;
     static struct shu_net_worker_arg s_args[SHU_NET_MAX_WORKERS];
@@ -362,8 +362,13 @@ int32_t net_run_accept_workers_c(int32_t listener_fd, int32_t n_workers, uint32_
     return 0;
 }
 
+/* 兼容：部分编译路径仍引用旧名，提供别名供链接。 */
+int32_t net_run_accept_workers_c(int32_t listener_fd, int32_t n_workers, uint32_t timeout_ms) {
+    return net_run_accept_workers_c_real(listener_fd, n_workers, timeout_ms);
+}
+
 /** 关闭 socket fd；与 std.fs.close 区分：Windows 下须用 closesocket。返回 0 成功，-1 失败。 */
-int32_t net_close_socket_c(int32_t fd) {
+int32_t net_close_socket_c_real(int32_t fd) {
     if (fd < 0) return 0;
 #if defined(_WIN32) || defined(_WIN64)
     return closesocket((SOCKET)fd) == 0 ? 0 : -1;
@@ -371,6 +376,9 @@ int32_t net_close_socket_c(int32_t fd) {
     return close(fd) == 0 ? 0 : -1;
 #endif
 }
+
+/* 兼容：部分编译路径仍引用旧名，提供别名供链接。 */
+int32_t net_close_socket_c(int32_t fd) { return net_close_socket_c_real(fd); }
 
 /* ========== UDP ========== */
 

@@ -11,8 +11,8 @@ expect_typeck_error() {
   echo "$err" | grep -q "typeck error" || { echo "expected typeck error in $file (e.g. $msg), got: $err"; exit 1; }
 }
 if [ -n "$SHU" ]; then
-  # test_su 路径：用 compiler/shu（shu_su），不碰 shu-c；仅跑边界负例（-o 时 typeck 报错）
-  TYPECK_SHU=./compiler/shu
+  # test_c 传 SHU=./compiler/shu-c 时用其跑负例以得 typeck error；test_su 不传 SHU 时用 compiler/shu
+  TYPECK_SHU="$SHU"
   expect_typeck_error tests/typeck/type_mismatch_assign.su "assignment type mismatch" "$TYPECK_SHU"
   expect_typeck_error tests/typeck/if_condition_not_bool.su "if condition must be bool" "$TYPECK_SHU"
   expect_typeck_error tests/typeck/undefined_name.su "undefined name" "$TYPECK_SHU"

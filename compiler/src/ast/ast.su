@@ -251,7 +251,10 @@ struct StructLayout {
   field_offsets: [8]i32;
 }
 
-/** 模块：顶层函数列表（或 arena func 池的 ref 表）+ main 函数下标 + import 路径 + 结构体布局（阶段 5 多文件；布局供 typeck 填 FIELD_ACCESS 偏移） */
+/** import 种类：与 C 的 AST_IMPORT_KIND_* 一致，供 parser/codegen 使用 */
+enum ImportKind { IMPORT_WHOLE, IMPORT_BINDING, IMPORT_SELECT }
+
+/** 模块：顶层函数列表（或 arena func 池的 ref 表）+ main 函数下标 + import 路径与种类 + 顶层 let/const + 结构体布局（与 C 的 ASTModule 同步，供自举） */
 struct Module {
   funcs: [256]Func;
   /** parse_into_buf 路径：顶层函数在 arena 的 func 池中的 1-based ref，与 num_funcs 同长 */
@@ -262,6 +265,22 @@ struct Module {
   import_path_data: [2048]u8;
   import_path_lens: [32]i32;
   num_imports: i32;
+  /** 与 num_imports 对应：0=整模块 import path;，1=const x = import path;，2=const { a,b } = import path; */
+  import_kinds: [32]i32;
+  /** import_kinds[i]==IMPORT_BINDING 时的绑定名（如 "process"） */
+  import_binding_name: [32][64]u8;
+  import_binding_name_len: [32]i32;
+  /** import_kinds[i]==IMPORT_SELECT 时的选取名个数（最多 8 个） */
+  import_select_count: [32]i32;
+  import_select_names: [32][8][64]u8;
+  import_select_name_lens: [32][8]i32;
+  /** 顶层 let/const：与 C 的 top_level_lets 同步，最多 32 条；name 在 type 在 arena.types，init 在 arena.exprs */
+  num_top_level_lets: i32;
+  top_level_let_names: [32][64]u8;
+  top_level_let_name_lens: [32]i32;
+  top_level_let_type_refs: [32]i32;
+  top_level_let_init_refs: [32]i32;
+  top_level_let_is_const: [32]i32;
   /** 结构体布局：由 typeck 从 STRUCT_LIT 推导，供 EXPR_FIELD_ACCESS 填 field_access_offset */
   struct_layouts: [32]StructLayout;
   num_struct_layouts: i32;

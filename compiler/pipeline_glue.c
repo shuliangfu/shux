@@ -18,14 +18,11 @@ struct shulang_slice_uint8_t parser_slice_from_buf(uint8_t *data, int32_t len) {
   return s;
 }
 
-/* C 包装：以 (data, len) 形式调用 pipeline，内部组 slice 后调 impl；形参顺序 (module, arena) 与 runtime.c 调用及 _impl 一致。 */
-extern int32_t pipeline_run_su_pipeline_impl(struct ast_Module *module, struct ast_ASTArena *arena, struct shulang_slice_uint8_t *source, struct codegen_CodegenOutBuf *out_buf, struct ast_PipelineDepCtx *ctx);
+/* C 包装：以 (data, len) 形式调用 pipeline，impl 内用 parse_into_with_init_buf 解析，无需组 slice。 */
+extern int32_t pipeline_run_su_pipeline_impl(struct ast_Module *module, struct ast_ASTArena *arena, uint8_t *source_data, size_t source_len, struct codegen_CodegenOutBuf *out_buf, struct ast_PipelineDepCtx *ctx);
 
 int32_t pipeline_run_su_pipeline(struct ast_Module *module, struct ast_ASTArena *arena, const uint8_t *source_data, size_t source_len, struct codegen_CodegenOutBuf *out_buf, struct ast_PipelineDepCtx *ctx) {
-  struct shulang_slice_uint8_t source;
-  source.data = (uint8_t *)source_data;
-  source.length = source_len;
-  return pipeline_run_su_pipeline_impl(module, arena, &source, out_buf, ctx);
+  return pipeline_run_su_pipeline_impl(module, arena, (uint8_t *)source_data, source_len, out_buf, ctx);
 }
 
 size_t pipeline_sizeof_arena(void) { return sizeof(struct ast_ASTArena); }
@@ -44,15 +41,20 @@ void pipeline_debug_module_funcs(void *m) {
   }
 }
 
+/** 供 runtime.c 诊断：返回 module 的 num_funcs（需与 pipeline 同 TU 以用 ast_Module 布局）。 */
+int driver_get_module_num_funcs(void *m) {
+  return m ? (int)((struct ast_Module *)m)->num_funcs : 0;
+}
+
 /** 诊断：解析 entry 后打印 main 的 body_ref；日常构建关闭，排查 main 空体时取消下方注释。由 pipeline.su 在 parse 后 / codegen 前调用。 */
 void driver_diagnostic_entry_module(struct ast_Module *mod, struct ast_ASTArena *a) {
   (void)a;
   (void)mod;
-  /* if (mod->main_func_index >= 0 && mod->main_func_index < mod->num_funcs) {
+  /* if (mod && (mod->main_func_index >= 0 && mod->main_func_index < mod->num_funcs)) {
     int32_t br = mod->funcs[mod->main_func_index].body_ref;
     fprintf(stderr, "[diag] entry num_funcs=%d main_idx=%d body_ref=%d\n",
             (int)mod->num_funcs, (int)mod->main_func_index, (int)br);
-  } else {
+  } else if (mod) {
     fprintf(stderr, "[diag] entry num_funcs=%d main_idx=%d (invalid)\n",
             (int)mod->num_funcs, (int)mod->main_func_index);
   } */

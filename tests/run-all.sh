@@ -9,8 +9,10 @@ if [ -n "$SHU" ]; then
     [ -f compiler/shu ] && mv compiler/shu compiler/shu.bak
     cp "$SHU" compiler/shu
     trap '[ -f compiler/shu.bak ] && mv compiler/shu.bak compiler/shu 2>/dev/null || true' EXIT
+    export RUN_ALL_USE_C=
 else
-    # 无 SHU 时构建 compiler：显式目标 all，否则 make 默认只构建 Makefile 第一个目标（io.o）。
+    # 无 SHU 时默认使用 C 流水线：仅构建 all（C 版 shu），子脚本不构建 bootstrap-driver-seed
+    export RUN_ALL_USE_C=1
     make -C compiler -q all 2>/dev/null || make -C compiler all
 fi
 
@@ -68,6 +70,7 @@ run run-multi-file-generic.sh
 # 表达式与控制流
 run run-binary-expr.sh
 run run-let-const.sh
+# toplevel let：C 与 .su 流水线均已支持，自举后始终跑
 run run-toplevel-let.sh
 run run-bool.sh
 run run-if-expr.sh
