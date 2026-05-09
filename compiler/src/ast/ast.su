@@ -201,9 +201,9 @@ struct LabeledStmt {
 
 /** 块：const/let 声明 + while/for + defer 块 + 标签语句 + 表达式语句 + 最终表达式 + stmt_order */
 struct Block {
-  const_decls: [64]ConstDecl;
+  const_decls: [128]ConstDecl;
   num_consts: i32;
-  let_decls: [64]LetDecl;
+  let_decls: [128]LetDecl;
   num_lets: i32;
   num_early_lets: i32;
   loops: [8]WhileLoop;

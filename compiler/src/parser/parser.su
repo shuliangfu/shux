@@ -83,11 +83,11 @@ allow(padding) struct OneFuncResult {
   const_name_lens: [64]i32;
   const_init_vals: [64]i32;
   num_lets: i32;
-  let_names: [64][64]u8;
-  let_name_lens: [64]i32;
-  let_init_vals: [64]i32;
+  let_names: [128][64]u8;
+  let_name_lens: [128]i32;
+  let_init_vals: [128]i32;
   /** 非 0 时表示该 let 的初值为 arena 中的 expr ref（如 EXPR_ARRAY_LIT、EXPR_CALL），block 构建时优先用此而非 let_init_vals。 */
-  let_init_refs: [64]i32;
+  let_init_refs: [128]i32;
   has_if_expr: bool;
   if_cond_true: bool;
   if_then_val: i32;
@@ -167,11 +167,11 @@ function copy_onefunc_into(dst: *OneFuncResult, src: *OneFuncResult): void {
     li = li + 1;
   }
   let lli: i32 = 0;
-  while (lli < 64) { dst.let_name_lens[lli] = src.let_name_lens[lli]; lli = lli + 1; }
+  while (lli < 128) { dst.let_name_lens[lli] = src.let_name_lens[lli]; lli = lli + 1; }
   let lvi: i32 = 0;
-  while (lvi < 64) { dst.let_init_vals[lvi] = src.let_init_vals[lvi]; lvi = lvi + 1; }
+  while (lvi < 128) { dst.let_init_vals[lvi] = src.let_init_vals[lvi]; lvi = lvi + 1; }
   let lri: i32 = 0;
-  while (lri < 64) { dst.let_init_refs[lri] = src.let_init_refs[lri]; lri = lri + 1; }
+  while (lri < 128) { dst.let_init_refs[lri] = src.let_init_refs[lri]; lri = lri + 1; }
   dst.has_if_expr = src.has_if_expr;
   dst.if_cond_true = src.if_cond_true;
   dst.if_then_val = src.if_then_val;
@@ -665,7 +665,7 @@ function fill_block_const_let_from_res(arena: *ASTArena, block_ref: i32, res: *O
     const_i = const_i + 1;
   }
   let let_i: i32 = 0;
-  while (let_i < res.num_lets && let_i < 64) {
+  while (let_i < res.num_lets && let_i < 128) {
     let init_ref: i32 = 0;
     if (res.let_init_refs[let_i] != 0) {
       init_ref = res.let_init_refs[let_i];
@@ -685,8 +685,8 @@ function fill_block_const_let_from_res(arena: *ASTArena, block_ref: i32, res: *O
     }
     let ld: LetDecl = b.let_decls[let_i];
     let lk: i32 = 0;
-    while (lk < res.let_name_lens[let_i] && lk < 64) {
-      let let_row: [64]u8 = res.let_names[let_i];
+    while (lk < res.let_name_lens[let_i] && lk < 128) {
+      let let_row: [128]u8 = res.let_names[let_i];
       ld.name[lk] = let_row[lk];
       lk = lk + 1;
     }
@@ -719,9 +719,9 @@ function parse_block_into(arena: *ASTArena, lex_after_lbrace: Lexer, source: []u
   let blk_dummy_clens: [64]i32 = [];
   let blk_dummy_cvals: [64]i32 = [];
   let blk_dummy_ln: [64][64]u8 = [blk_empty64, blk_empty64, blk_empty64, blk_empty64, blk_empty64, blk_empty64, blk_empty64, blk_empty64, blk_empty64, blk_empty64, blk_empty64, blk_empty64, blk_empty64, blk_empty64, blk_empty64, blk_empty64, blk_empty64, blk_empty64, blk_empty64, blk_empty64, blk_empty64, blk_empty64, blk_empty64, blk_empty64, blk_empty64, blk_empty64, blk_empty64, blk_empty64, blk_empty64, blk_empty64, blk_empty64, blk_empty64, blk_empty64, blk_empty64, blk_empty64, blk_empty64, blk_empty64, blk_empty64, blk_empty64, blk_empty64, blk_empty64, blk_empty64, blk_empty64, blk_empty64, blk_empty64, blk_empty64, blk_empty64, blk_empty64, blk_empty64, blk_empty64, blk_empty64, blk_empty64, blk_empty64, blk_empty64, blk_empty64, blk_empty64, blk_empty64, blk_empty64, blk_empty64, blk_empty64, blk_empty64, blk_empty64, blk_empty64, blk_empty64];
-  let blk_dummy_llens: [64]i32 = [];
-  let blk_dummy_lvals: [64]i32 = [];
-  let blk_dummy_let_refs: [64]i32 = [];
+  let blk_dummy_llens: [128]i32 = [];
+  let blk_dummy_lvals: [128]i32 = [];
+  let blk_dummy_let_refs: [128]i32 = [];
   let blk_dummy_loop_refs: [8]i32 = [];
   let blk_dummy_for_refs: [8]i32 = [];
   let blk_dummy_call_arg_vals: [16]i32 = [];
@@ -1148,7 +1148,7 @@ function parse_body_lets_into(arena: *ASTArena, lex: Lexer, source: []u8, out: *
   let r: LexerResult = LexerResult { next_lex: lex, tok: Token { kind: TokenKind.TOKEN_EOF, line: 0, col: 0, int_val: 0, float_val: 0.0, ident: 0, ident_len: 0 }, token_start: 0 };
   lexer_next_into(&r, lex, source);
   while (r.tok.kind == TokenKind.TOKEN_LET || r.tok.kind == TokenKind.TOKEN_CONST) {
-    if (out.num_lets >= 64) {
+    if (out.num_lets >= 128) {
       return lex;
     }
     let is_let: bool = r.tok.kind == TokenKind.TOKEN_LET;
@@ -2060,8 +2060,8 @@ function parse_one_function_impl(out: *OneFuncResult, arena: *ASTArena, lex: Lex
   let dummy_const_vals: [64]i32 = [];
   let dummy_let_names: [64][64]u8 = [empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64];
   let dummy_let_lens: [64]i32 = [];
-  let dummy_let_vals: [64]i32 = [];
-  let dummy_let_refs: [64]i32 = [];
+  let dummy_let_vals: [128]i32 = [];
+  let dummy_let_refs: [128]i32 = [];
   let dummy_loop_refs: [8]i32 = [];
   let dummy_call_arg_vals: [16]i32 = [];
   let num_loops: i32 = 0;
@@ -4330,8 +4330,8 @@ function parse_one_function_buf(lex: Lexer, data: *u8, len: i32): OneFuncResult 
   let dummy_const_vals: [64]i32 = [];
   let dummy_let_names: [64][64]u8 = [empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64];
   let dummy_let_lens: [64]i32 = [];
-  let dummy_let_vals: [64]i32 = [];
-  let dummy_let_refs: [64]i32 = [];
+  let dummy_let_vals: [128]i32 = [];
+  let dummy_let_refs: [128]i32 = [];
   let dummy_loop_refs: [8]i32 = [];
   let dummy_for_refs: [8]i32 = [];
   let dummy_call_arg_vals: [16]i32 = [];
@@ -4516,7 +4516,7 @@ function parse_into(arena: *ASTArena, module: *Module, source: []u8): ParseIntoR
     let parse_into_dummy_ln: [64][64]u8 = [parse_into_empty64, parse_into_empty64, parse_into_empty64, parse_into_empty64, parse_into_empty64, parse_into_empty64, parse_into_empty64, parse_into_empty64, parse_into_empty64, parse_into_empty64, parse_into_empty64, parse_into_empty64, parse_into_empty64, parse_into_empty64, parse_into_empty64, parse_into_empty64, parse_into_empty64, parse_into_empty64, parse_into_empty64, parse_into_empty64, parse_into_empty64, parse_into_empty64, parse_into_empty64, parse_into_empty64, parse_into_empty64, parse_into_empty64, parse_into_empty64, parse_into_empty64, parse_into_empty64, parse_into_empty64, parse_into_empty64, parse_into_empty64, parse_into_empty64, parse_into_empty64, parse_into_empty64, parse_into_empty64, parse_into_empty64, parse_into_empty64, parse_into_empty64, parse_into_empty64, parse_into_empty64, parse_into_empty64, parse_into_empty64, parse_into_empty64, parse_into_empty64, parse_into_empty64, parse_into_empty64, parse_into_empty64, parse_into_empty64, parse_into_empty64, parse_into_empty64, parse_into_empty64, parse_into_empty64, parse_into_empty64, parse_into_empty64, parse_into_empty64, parse_into_empty64, parse_into_empty64, parse_into_empty64, parse_into_empty64, parse_into_empty64, parse_into_empty64, parse_into_empty64, parse_into_empty64];
     let parse_into_dummy_llens: [64]i32 = [];
     let parse_into_dummy_lvals: [64]i32 = [];
-    let parse_into_dummy_let_refs: [64]i32 = [];
+    let parse_into_dummy_let_refs: [128]i32 = [];
     let parse_into_dummy_loop_refs: [8]i32 = [];
     let parse_into_dummy_for_refs: [8]i32 = [];
     let parse_into_dummy_call_arg_vals: [16]i32 = [];
@@ -5450,7 +5450,7 @@ function parse_into(arena: *ASTArena, module: *Module, source: []u8): ParseIntoR
       const_i = const_i + 1;
     }
     let let_i: i32 = 0;
-    while (let_i < res.num_lets && let_i < 64) {
+    while (let_i < res.num_lets && let_i < 128) {
       let init_ref: i32 = 0;
       if (res.let_init_refs[let_i] != 0) {
         init_ref = res.let_init_refs[let_i];
@@ -5494,8 +5494,8 @@ function parse_into(arena: *ASTArena, module: *Module, source: []u8): ParseIntoR
       }
       let ld: LetDecl = b.let_decls[let_i];
       let lk: i32 = 0;
-      while (lk < res.let_name_lens[let_i] && lk < 64) {
-        let let_row: [64]u8 = res.let_names[let_i];
+      while (lk < res.let_name_lens[let_i] && lk < 128) {
+        let let_row: [128]u8 = res.let_names[let_i];
         ld.name[lk] = let_row[lk];
         lk = lk + 1;
       }
@@ -6292,7 +6292,7 @@ function parse_into_buf(arena: *ASTArena, module: *Module, data: *u8, len: i32):
       const_i = const_i + 1;
     }
     let let_i: i32 = 0;
-    while (let_i < res.num_lets && let_i < 64) {
+    while (let_i < res.num_lets && let_i < 128) {
       let init_ref: i32 = 0;
       if (res.let_init_refs[let_i] != 0) {
         init_ref = res.let_init_refs[let_i];
@@ -6312,8 +6312,8 @@ function parse_into_buf(arena: *ASTArena, module: *Module, data: *u8, len: i32):
       }
       let ld: LetDecl = b.let_decls[let_i];
       let lk: i32 = 0;
-      while (lk < res.let_name_lens[let_i] && lk < 64) {
-        let let_row: [64]u8 = res.let_names[let_i];
+      while (lk < res.let_name_lens[let_i] && lk < 128) {
+        let let_row: [128]u8 = res.let_names[let_i];
         ld.name[lk] = let_row[lk];
         lk = lk + 1;
       }
