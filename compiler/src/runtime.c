@@ -1687,6 +1687,12 @@ static int invoke_cc(const char **c_paths, int n, const char *out_path, const ch
             static char oopt_buf[8];
             (void)snprintf(oopt_buf, sizeof(oopt_buf), "-O%s", opt_level);
             argv[i++] = oopt_buf;
+            /* 极致性能：-O3 时加 march=native mtune=native；-O2 时加 march=native */
+            if (strcmp(opt_level, "3") == 0 || strcmp(opt_level, "2") == 0) {
+                argv[i++] = (char *)"-march=native";
+                if (strcmp(opt_level, "3") == 0)
+                    argv[i++] = (char *)"-mtune=native";
+            }
         }
         /* 阶段 8：非调试时传 -DNDEBUG；-flto 便于跨模块内联（2.3 构建与链接） */
         if (strcmp(opt_level, "0") != 0)
@@ -2127,7 +2133,7 @@ int RUN_CC_FUNC(int argc, char **argv) {
             emit_extern_imports = 1;
         } else if (strcmp(argv[i], "-D") == 0) {
             if (i + 1 >= argc) {
-                fprintf(stderr, "Usage: %s [ -L <lib> ] [ -target <triple> ] [ -D <sym> ] [ -O 0|2|s ] [ -flto ] <file.su> [ -o <out> ]\n", argv[0] ? argv[0] : "shu");
+                fprintf(stderr, "Usage: %s [ -L <lib> ] [ -target <triple> ] [ -D <sym> ] [ -O 0|1|2|3|s ] [ -flto ] <file.su> [ -o <out> ]\n", argv[0] ? argv[0] : "shu");
                 return 1;
             }
             if (ndefines >= MAX_DEFINES) {
@@ -2145,12 +2151,12 @@ int RUN_CC_FUNC(int argc, char **argv) {
             defines[ndefines++] = argv[i] + 2;
         } else if (strcmp(argv[i], "-O") == 0) {
             if (i + 1 >= argc) {
-                fprintf(stderr, "Usage: %s [ -L <lib> ] [ -target <triple> ] [ -D <sym> ] [ -O 0|2|s ] [ -flto ] <file.su> [ -o <out> ]\n", argv[0] ? argv[0] : "shu");
+                fprintf(stderr, "Usage: %s [ -L <lib> ] [ -target <triple> ] [ -D <sym> ] [ -O 0|1|2|3|s ] [ -flto ] <file.su> [ -o <out> ]\n", argv[0] ? argv[0] : "shu");
                 return 1;
             }
             opt_level = argv[i + 1];
-            if (strcmp(opt_level, "0") != 0 && strcmp(opt_level, "2") != 0 && strcmp(opt_level, "s") != 0) {
-                fprintf(stderr, "shu: -O expects 0, 2, or s (got '%s')\n", opt_level);
+            if (strcmp(opt_level, "0") != 0 && strcmp(opt_level, "1") != 0 && strcmp(opt_level, "2") != 0 && strcmp(opt_level, "3") != 0 && strcmp(opt_level, "s") != 0) {
+                fprintf(stderr, "shu: -O expects 0, 1, 2, 3, or s (got '%s')\n", opt_level);
                 return 1;
             }
             i++;
@@ -2158,14 +2164,14 @@ int RUN_CC_FUNC(int argc, char **argv) {
             use_lto = 1;
         } else if (strcmp(argv[i], "-o") == 0) {
             if (i + 1 >= argc) {
-                fprintf(stderr, "Usage: %s [ -L <lib> ] [ -target <triple> ] [ -D <sym> ] [ -O 0|2|s ] [ -flto ] <file.su> [ -o <out> ]\n", argv[0] ? argv[0] : "shu");
+                fprintf(stderr, "Usage: %s [ -L <lib> ] [ -target <triple> ] [ -D <sym> ] [ -O 0|1|2|3|s ] [ -flto ] <file.su> [ -o <out> ]\n", argv[0] ? argv[0] : "shu");
                 return 1;
             }
             out_path = argv[i + 1];
             i++;
         } else if (strcmp(argv[i], "-L") == 0) {
             if (i + 1 >= argc) {
-                fprintf(stderr, "Usage: %s [ -L <lib> ] [ -target <triple> ] [ -D <sym> ] [ -O 0|2|s ] [ -flto ] <file.su> [ -o <out> ]\n", argv[0] ? argv[0] : "shu");
+                fprintf(stderr, "Usage: %s [ -L <lib> ] [ -target <triple> ] [ -D <sym> ] [ -O 0|1|2|3|s ] [ -flto ] <file.su> [ -o <out> ]\n", argv[0] ? argv[0] : "shu");
                 return 1;
             }
             if (n_lib_roots < MAX_LIB_ROOTS)
@@ -2173,7 +2179,7 @@ int RUN_CC_FUNC(int argc, char **argv) {
             i++;
         } else if (strcmp(argv[i], "-target") == 0) {
             if (i + 1 >= argc) {
-                fprintf(stderr, "Usage: %s [ -L <lib> ] [ -target <triple> ] [ -D <sym> ] [ -O 0|2|s ] [ -flto ] <file.su> [ -o <out> ]\n", argv[0] ? argv[0] : "shu");
+                fprintf(stderr, "Usage: %s [ -L <lib> ] [ -target <triple> ] [ -D <sym> ] [ -O 0|1|2|3|s ] [ -flto ] <file.su> [ -o <out> ]\n", argv[0] ? argv[0] : "shu");
                 return 1;
             }
             target = argv[i + 1];
@@ -2225,7 +2231,7 @@ int RUN_CC_FUNC(int argc, char **argv) {
         use_lto = 1;
 
     if (!input_path) {
-        fprintf(stderr, "Usage: %s [ -L <lib> ] [ -target <triple> ] [ -D <sym> ] [ -O 0|2|s ] [ -flto ] <file.su> [ -o <out> ]\n", argv[0] ? argv[0] : "shu");
+        fprintf(stderr, "Usage: %s [ -L <lib> ] [ -target <triple> ] [ -D <sym> ] [ -O 0|1|2|3|s ] [ -flto ] <file.su> [ -o <out> ]\n", argv[0] ? argv[0] : "shu");
         return 0;
     }
 

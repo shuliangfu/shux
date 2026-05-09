@@ -2309,7 +2309,7 @@ function parse_one_function_impl(out: *OneFuncResult, arena: *ASTArena, lex: Lex
     /* 将 out 中由 parse_body_lets_into 填写的 let 相关字段同步到局部变量，以便后续 tmp_success/copy_onefunc_into 写回时保留 */
     num_lets = out.num_lets;
     let lri: i32 = 0;
-    while (lri < 64) {
+    while (lri < 128) {
       let_init_refs[lri] = out.let_init_refs[lri];
       let_init_vals[lri] = out.let_init_vals[lri];
       let_name_lens[lri] = out.let_name_lens[lri];
