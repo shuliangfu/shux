@@ -1597,6 +1597,22 @@ function skip_balanced_parens_into(out: *Lexer, lex: Lexer, source: []u8): void 
 }
 
 /** 与 skip_balanced_parens 等价，接受 (data: *u8, len) 供 buf 路径使用。 */
+/** skip_balanced_parens_buf 的 _into_buf 变体。 */
+function skip_balanced_parens_into_buf(out: *Lexer, lex: Lexer, data: *u8, len: i32): void {
+  let depth: i32 = 1;
+  while (depth > 0) {
+    let r: LexerResult = lexer_next_buf(lex, data, len);
+    if (r.tok.kind == TokenKind.TOKEN_LPAREN) { depth = depth + 1; }
+    else if (r.tok.kind == TokenKind.TOKEN_RPAREN) {
+      depth = depth - 1;
+      if (depth == 0) { out.pos = r.next_lex.pos; out.line = r.next_lex.line; out.col = r.next_lex.col; return; }
+    }
+    if (r.tok.kind == TokenKind.TOKEN_EOF) { out.pos = lex.pos; out.line = lex.line; out.col = lex.col; return; }
+    lex_from_next_into(&lex, r);
+  }
+  out.pos = lex.pos; out.line = lex.line; out.col = lex.col;
+}
+
 function skip_balanced_parens_buf(lex: Lexer, data: *u8, len: i32): Lexer {
   let depth: i32 = 1;
   while (depth > 0) {
@@ -1669,6 +1685,22 @@ function skip_balanced_braces_into(out: *Lexer, lex: Lexer, source: []u8): void 
   out.pos = lex.pos;
   out.line = lex.line;
   out.col = lex.col;
+}
+
+/** skip_balanced_braces_buf 的 _into_buf 变体。 */
+function skip_balanced_braces_into_buf(out: *Lexer, lex: Lexer, data: *u8, len: i32): void {
+  let depth: i32 = 1;
+  while (depth > 0) {
+    let r: LexerResult = lexer_next_buf(lex, data, len);
+    if (r.tok.kind == TokenKind.TOKEN_LBRACE) { depth = depth + 1; }
+    else if (r.tok.kind == TokenKind.TOKEN_RBRACE) {
+      depth = depth - 1;
+      if (depth == 0) { out.pos = r.next_lex.pos; out.line = r.next_lex.line; out.col = r.next_lex.col; return; }
+    }
+    if (r.tok.kind == TokenKind.TOKEN_EOF) { out.pos = lex.pos; out.line = lex.line; out.col = lex.col; return; }
+    lex_from_next_into(&lex, r);
+  }
+  out.pos = lex.pos; out.line = lex.line; out.col = lex.col;
 }
 
 /** 与 skip_balanced_braces 等价，接受 (data: *u8, len) 供 buf 路径使用。 */
@@ -1746,6 +1778,25 @@ function skip_one_function_full(lex: Lexer, source: []u8): Lexer {
   }
   lex = skip_balanced_braces(r.next_lex, source);
   return lex;
+}
+
+/** skip_one_function_full_buf 的 _into_buf 变体。 */
+function skip_one_function_full_into_buf(out: *Lexer, lex: Lexer, data: *u8, len: i32): void {
+  let r: LexerResult = lexer_next_buf(lex, data, len);
+  if (r.tok.kind != TokenKind.TOKEN_FUNCTION) { out.pos = lex.pos; out.line = lex.line; out.col = lex.col; return; }
+  lex_from_next_into(&lex, r); r = lexer_next_buf(lex, data, len);
+  if (r.tok.kind != TokenKind.TOKEN_IDENT) { out.pos = lex.pos; out.line = lex.line; out.col = lex.col; return; }
+  lex_from_next_into(&lex, r); r = lexer_next_buf(lex, data, len);
+  if (r.tok.kind != TokenKind.TOKEN_LPAREN) { out.pos = lex.pos; out.line = lex.line; out.col = lex.col; return; }
+  skip_balanced_parens_into_buf(&lex, r.next_lex, data, len);
+  r = lexer_next_buf(lex, data, len);
+  if (r.tok.kind != TokenKind.TOKEN_COLON) { out.pos = lex.pos; out.line = lex.line; out.col = lex.col; return; }
+  lex_from_next_into(&lex, r); r = lexer_next_buf(lex, data, len);
+  while (r.tok.kind != TokenKind.TOKEN_LBRACE && r.tok.kind != TokenKind.TOKEN_EOF) {
+    lex_from_next_into(&lex, r); r = lexer_next_buf(lex, data, len);
+  }
+  if (r.tok.kind != TokenKind.TOKEN_LBRACE) { out.pos = lex.pos; out.line = lex.line; out.col = lex.col; return; }
+  skip_balanced_braces_into_buf(out, r.next_lex, data, len);
 }
 
 /** 与 skip_one_function_full 等价，接受 (data: *u8, len) 供 parse_into_buf 使用。 */
@@ -3584,6 +3635,17 @@ function skip_one_impl(lex: Lexer, source: []u8): Lexer {
 }
 
 /** 与 skip_one_enum 等价，接受 (data: *u8, len) 供 buf 路径使用。 */
+/** 与 skip_one_enum 等价，接受 (data: *u8, len) 供 buf 路径使用。 */
+/** skip_one_enum_buf 的 _into_buf 变体。 */
+function skip_one_enum_into_buf(out: *Lexer, lex: Lexer, data: *u8, len: i32): void {
+  let r: LexerResult = lexer_next_buf(lex, data, len);
+  if (r.tok.kind != TokenKind.TOKEN_ENUM) { out.pos = lex.pos; out.line = lex.line; out.col = lex.col; return; }
+  lex_from_next_into(&lex, r); r = lexer_next_buf(lex, data, len);
+  if (r.tok.kind != TokenKind.TOKEN_IDENT) { out.pos = lex.pos; out.line = lex.line; out.col = lex.col; return; }
+  lex_from_next_into(&lex, r); r = lexer_next_buf(lex, data, len);
+  if (r.tok.kind != TokenKind.TOKEN_LBRACE) { out.pos = lex.pos; out.line = lex.line; out.col = lex.col; return; }
+  skip_balanced_braces_into_buf(out, r.next_lex, data, len);
+}
 function skip_one_enum_buf(lex: Lexer, data: *u8, len: i32): Lexer {
   let r: LexerResult = lexer_next_buf(lex, data, len);
   if (r.tok.kind != TokenKind.TOKEN_ENUM) {
@@ -3604,6 +3666,16 @@ function skip_one_enum_buf(lex: Lexer, data: *u8, len: i32): Lexer {
 }
 
 /** 与 skip_one_trait 等价，供 parse_into_buf 使用。 */
+/** skip_one_trait_buf 的 _into_buf 变体。 */
+function skip_one_trait_into_buf(out: *Lexer, lex: Lexer, data: *u8, len: i32): void {
+  let r: LexerResult = lexer_next_buf(lex, data, len);
+  if (r.tok.kind != TokenKind.TOKEN_TRAIT) { out.pos = lex.pos; out.line = lex.line; out.col = lex.col; return; }
+  lex_from_next_into(&lex, r); r = lexer_next_buf(lex, data, len);
+  if (r.tok.kind != TokenKind.TOKEN_IDENT) { out.pos = lex.pos; out.line = lex.line; out.col = lex.col; return; }
+  lex_from_next_into(&lex, r); r = lexer_next_buf(lex, data, len);
+  if (r.tok.kind != TokenKind.TOKEN_LBRACE) { out.pos = lex.pos; out.line = lex.line; out.col = lex.col; return; }
+  skip_balanced_braces_into_buf(out, r.next_lex, data, len);
+}
 function skip_one_trait_buf(lex: Lexer, data: *u8, len: i32): Lexer {
   let r: LexerResult = lexer_next_buf(lex, data, len);
   if (r.tok.kind != TokenKind.TOKEN_TRAIT) {
@@ -3624,6 +3696,21 @@ function skip_one_trait_buf(lex: Lexer, data: *u8, len: i32): Lexer {
 }
 
 /** 与 skip_one_impl 等价，供 parse_into_buf 使用。 */
+/** skip_one_impl_buf 的 _into_buf 变体。 */
+function skip_one_impl_into_buf(out: *Lexer, lex: Lexer, data: *u8, len: i32): void {
+  let r: LexerResult = lexer_next_buf(lex, data, len);
+  if (r.tok.kind != TokenKind.TOKEN_IMPL) { out.pos = lex.pos; out.line = lex.line; out.col = lex.col; return; }
+  lex_from_next_into(&lex, r); r = lexer_next_buf(lex, data, len);
+  if (r.tok.kind != TokenKind.TOKEN_IDENT) { out.pos = lex.pos; out.line = lex.line; out.col = lex.col; return; }
+  lex_from_next_into(&lex, r); r = lexer_next_buf(lex, data, len);
+  if (r.tok.kind == TokenKind.TOKEN_FOR) {
+    lex_from_next_into(&lex, r); r = lexer_next_buf(lex, data, len);
+    if (r.tok.kind != TokenKind.TOKEN_IDENT) { out.pos = lex.pos; out.line = lex.line; out.col = lex.col; return; }
+    lex_from_next_into(&lex, r); r = lexer_next_buf(lex, data, len);
+  }
+  if (r.tok.kind != TokenKind.TOKEN_LBRACE) { out.pos = lex.pos; out.line = lex.line; out.col = lex.col; return; }
+  skip_balanced_braces_into_buf(out, r.next_lex, data, len);
+}
 function skip_one_impl_buf(lex: Lexer, data: *u8, len: i32): Lexer {
   let r: LexerResult = lexer_next_buf(lex, data, len);
   if (r.tok.kind != TokenKind.TOKEN_IMPL) {
@@ -3861,6 +3948,26 @@ function parse_one_extern_and_add(arena: *ASTArena, module: *Module, lex: Lexer,
 }
 
 /** 与 skip_one_extern 等价，接受 (data: *u8, len) 供 parse_into_buf 使用。 */
+/** skip_one_extern_buf 的 _into_buf 变体。 */
+function skip_one_extern_into_buf(out: *Lexer, lex: Lexer, data: *u8, len: i32): void {
+  let r: LexerResult = lexer_next_buf(lex, data, len);
+  if (r.tok.kind != TokenKind.TOKEN_EXTERN) { out.pos = lex.pos; out.line = lex.line; out.col = lex.col; return; }
+  lex_from_next_into(&lex, r); r = lexer_next_buf(lex, data, len);
+  if (r.tok.kind != TokenKind.TOKEN_FUNCTION) { out.pos = lex.pos; out.line = lex.line; out.col = lex.col; return; }
+  lex_from_next_into(&lex, r); r = lexer_next_buf(lex, data, len);
+  if (r.tok.kind != TokenKind.TOKEN_IDENT) { out.pos = lex.pos; out.line = lex.line; out.col = lex.col; return; }
+  lex_from_next_into(&lex, r); r = lexer_next_buf(lex, data, len);
+  if (r.tok.kind != TokenKind.TOKEN_LPAREN) { out.pos = lex.pos; out.line = lex.line; out.col = lex.col; return; }
+  skip_balanced_parens_into_buf(&lex, r.next_lex, data, len);
+  r = lexer_next_buf(lex, data, len);
+  if (r.tok.kind != TokenKind.TOKEN_COLON) { out.pos = lex.pos; out.line = lex.line; out.col = lex.col; return; }
+  lex_from_next_into(&lex, r); r = lexer_next_buf(lex, data, len);
+  while (r.tok.kind != TokenKind.TOKEN_SEMICOLON && r.tok.kind != TokenKind.TOKEN_EOF) {
+    lex_from_next_into(&lex, r); r = lexer_next_buf(lex, data, len);
+  }
+  if (r.tok.kind == TokenKind.TOKEN_SEMICOLON) { lex_from_next_into(&lex, r); }
+  out.pos = lex.pos; out.line = lex.line; out.col = lex.col;
+}
 function skip_one_extern_buf(lex: Lexer, data: *u8, len: i32): Lexer {
   let r: LexerResult = lexer_next_buf(lex, data, len);
   if (r.tok.kind != TokenKind.TOKEN_EXTERN) {
@@ -3952,6 +4059,34 @@ function parse_one_extern_skip_buf(lex: Lexer, data: *u8, len: i32): ExternParse
  * 解析一条 extern function 声明并加入 module（buf 路径）；与 parse_one_extern_and_add 对称。
  * 先调 parse_one_extern_skip_buf 再按结果写 module，失败则 fallback 到 skip_one_extern_buf。
  */
+/** parse_one_extern_and_add_buf 的 _into_buf 变体。 */
+function parse_one_extern_and_add_into_buf(arena: *ASTArena, module: *Module, lex: Lexer, data: *u8, len: i32, lex_out: *Lexer): void {
+  let res: ExternParseResult = parse_one_extern_skip_buf(lex, data, len);
+  if (res.name_len < 0) { skip_one_extern_into_buf(lex_out, lex, data, len); return; }
+  if (module.num_funcs >= 256) { lex_out.pos = res.next_lex.pos; lex_out.line = res.next_lex.line; lex_out.col = res.next_lex.col; return; }
+  let type_ref: i32 = ast_arena_type_alloc(arena);
+  if (type_ref == 0) { lex_out.pos = res.next_lex.pos; lex_out.line = res.next_lex.line; lex_out.col = res.next_lex.col; return; }
+  let t: Type = ast_arena_type_get(arena, type_ref);
+  t.kind = TypeKind.TYPE_I32; t.name_len = 0; t.elem_type_ref = 0; t.array_size = 0;
+  ast_arena_type_set(arena, type_ref, t);
+  let func_ref: i32 = ast_arena_func_alloc(arena);
+  if (func_ref == 0) { lex_out.pos = res.next_lex.pos; lex_out.line = res.next_lex.line; lex_out.col = res.next_lex.col; return; }
+  let f: Func = ast_arena_func_get(arena, func_ref);
+  let ki: i32 = 0;
+  while (ki < 64) {
+    if (ki < res.name_len) { f.name[ki] = res.name[ki]; }
+    else { f.name[ki] = 0; }
+    ki = ki + 1;
+  }
+  f.name_len = res.name_len; f.num_params = 0; f.return_type_ref = type_ref;
+  f.body_ref = 0; f.body_expr_ref = 0; f.is_extern = 1;
+  ast_arena_func_set(arena, func_ref, f);
+  module.funcs[module.num_funcs] = f;
+  module.func_refs[module.num_funcs] = func_ref;
+  module.num_funcs = module.num_funcs + 1;
+  lex_out.pos = res.next_lex.pos; lex_out.line = res.next_lex.line; lex_out.col = res.next_lex.col;
+}
+
 function parse_one_extern_and_add_buf(arena: *ASTArena, module: *Module, lex: Lexer, data: *u8, len: i32): Lexer {
   let res: ExternParseResult = parse_one_extern_skip_buf(lex, data, len);
   if (res.name_len < 0) {
@@ -4541,6 +4676,16 @@ function try_skip_allow_padding_struct_buf(lex: Lexer, data: *u8, len: i32): Try
 }
 
 /** 与 skip_one_struct 等价，接受 (data: *u8, len) 供 buf 路径使用。 */
+/** skip_one_struct_buf 的 _into_buf 变体。 */
+function skip_one_struct_into_buf(out: *Lexer, lex: Lexer, data: *u8, len: i32): void {
+  let r: LexerResult = lexer_next_buf(lex, data, len);
+  if (r.tok.kind != TokenKind.TOKEN_STRUCT) { out.pos = lex.pos; out.line = lex.line; out.col = lex.col; return; }
+  lex_from_next_into(&lex, r); r = lexer_next_buf(lex, data, len);
+  if (r.tok.kind != TokenKind.TOKEN_IDENT) { out.pos = lex.pos; out.line = lex.line; out.col = lex.col; return; }
+  lex_from_next_into(&lex, r); r = lexer_next_buf(lex, data, len);
+  if (r.tok.kind != TokenKind.TOKEN_LBRACE) { out.pos = lex.pos; out.line = lex.line; out.col = lex.col; return; }
+  skip_balanced_braces_into_buf(out, r.next_lex, data, len);
+}
 function skip_one_struct_buf(lex: Lexer, data: *u8, len: i32): Lexer {
   let r: LexerResult = lexer_next_buf(lex, data, len);
   if (r.tok.kind != TokenKind.TOKEN_STRUCT) {
@@ -6078,26 +6223,26 @@ function parse_into_buf(arena: *ASTArena, module: *Module, data: *u8, len: i32):
   while (true) {
     let r: LexerResult = lexer_next_buf(lex, data, len);
     if (r.tok.kind == TokenKind.TOKEN_STRUCT) {
-      lex = skip_one_struct_buf(lex, data, len);
+      skip_one_struct_into_buf(&lex, lex, data, len);
       continue;
     }
     if (r.tok.kind == TokenKind.TOKEN_ENUM) {
-      lex = skip_one_enum_buf(lex, data, len);
+      skip_one_enum_into_buf(&lex, lex, data, len);
       continue;
     }
     if (r.tok.kind == TokenKind.TOKEN_TRAIT) {
-      lex = skip_one_trait_buf(lex, data, len);
+      skip_one_trait_into_buf(&lex, lex, data, len);
       continue;
     }
     if (r.tok.kind == TokenKind.TOKEN_IMPL) {
-      lex = skip_one_impl_buf(lex, data, len);
+      skip_one_impl_into_buf(&lex, lex, data, len);
       continue;
     }
     if (r.tok.kind == TokenKind.TOKEN_EXTERN) {
       let iter_start_buf: Lexer = lex;
-      lex = parse_one_extern_and_add_buf(arena, module, lex, data, len);
+      parse_one_extern_and_add_into_buf(arena, module, lex, data, len, &lex);
       if (lex.pos == iter_start_buf.pos && lex.pos < (len as usize)) {
-        lex = skip_one_extern_buf(lex, data, len);
+        skip_one_extern_into_buf(&lex, lex, data, len);
       }
       continue;
     }
@@ -6165,7 +6310,7 @@ function parse_into_buf(arena: *ASTArena, module: *Module, data: *u8, len: i32):
       if (!res.ok) {
         let lib: LibraryParseResult = parse_one_function_library_buf(arena, module, lex_at_function_buf, data, len);
         if (!lib.ok) {
-          lex = skip_one_function_full_buf(lex_at_function_buf, data, len);
+          skip_one_function_full_into_buf(&lex, lex_at_function_buf, data, len);
           continue;
         }
         lex_from_library_into(&lex, lib);
