@@ -21,6 +21,11 @@ extern function driver_dep_seeded_get(i: i32): i32;
 /** 当前 dep 个数（与 ctx.ndep 同步，由 C 在 codegen 前设置）；循环中用 get_ndep() 从源头避免 build 对 while (j < ndep) 的补丁。 */
 extern function get_ndep(): i32;
 
+/* codegen.su 的 -E-extern 生成 C 时不自动扫描间接调用，以下显式声明 pipeline 内调用的外部函数。 */
+extern function parser_parse_one_function_impl(out: *OneFuncResult, arena: *ASTArena, lex: Lexer, source: []u8): void;
+extern function ast_ast_arena_init(arena: *ASTArena): void;
+extern function asm_asm_codegen_ast(module: *Module, arena: *ASTArena, out_buf: *CodegenOutBuf, ctx: *PipelineDepCtx): i32;
+
 /** 阶段 6.1 完全自举：resolve、read、preprocess、parse 全在 .su；pipeline_parse_into_buf 调 parser.parse_into_buf，不再依赖 C。 */
 
 /** 将 (buf, buf_len) 传入 parser.parse_into_buf，返回 0 成功 -1 失败。调用前由 C 或调用方保证 arena/module 可用；此处先 parse_into_init 再解析。 */
