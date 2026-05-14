@@ -1366,6 +1366,19 @@ static void resolve_import_file_path_multi(const char **lib_roots, int n_lib_roo
     if (entry_dir && entry_dir[0] && strchr(import_path, '.') == NULL) {
         (void)snprintf(path, path_size, "%s/%.255s.su", entry_dir, import_path);
     }
+    /* 带点 import（如 arch.x86_64）也应在 dep 所在目录查找：backend.su 在 src/asm/ 导入 arch.x86_64 → src/asm/arch/x86_64.su */
+    if (entry_dir && entry_dir[0] && strchr(import_path, '.') != NULL && path_size >= 16) {
+        size_t off = (size_t)snprintf(path, path_size, "%s/", entry_dir);
+        for (const char *s = import_path; *s && off + 1 < path_size; s++)
+            path[off++] = (char)(*s == '.' ? '/' : *s);
+        if (off + 5 <= path_size)
+            snprintf(path + off, path_size - off, ".su");
+        if (access(path, R_OK) == 0) return;
+        /* 也试 /mod.su（兼容未来扩展） */
+        if (off + 9 <= path_size)
+            snprintf(path + (off - 1), path_size - (off - 1), "/mod.su");
+        if (access(path, R_OK) == 0) return;
+    }
 }
 
 #define MAX_ALL_DEPS 32
@@ -1429,6 +1442,21 @@ static ASTModule *load_one_import(const char *import_path, const char **lib_root
     }
     char path[512];
     resolve_import_file_path_multi(lib_roots, n_lib_roots, entry_dir, import_path, path, sizeof(path));
+    /* 从 path 提取所在目录，供递归加载子 import 时使用（而非沿用顶层 entry_dir）。
+     * 例如 pipeline.su 在 src/pipeline/ 导入 asm；asm.su 在 src/asm/ 导入 backend；
+     * 若不切换 dep_dir，递归会去 src/pipeline/ 找 backend.su 而失败。 */
+    char dep_dir[512];
+    {
+        const char *slash = strrchr(path, '/');
+        if (slash) {
+            size_t dlen = (size_t)(slash - path);
+            if (dlen >= sizeof(dep_dir)) dlen = sizeof(dep_dir) - 1;
+            memcpy(dep_dir, path, dlen);
+            dep_dir[dlen] = '\0';
+        } else {
+            snprintf(dep_dir, sizeof(dep_dir), ".");
+        }
+    }
     char *raw = read_file(path, NULL);
     if (!raw) {
         fprintf(stderr, "shu: cannot open import '%s' (tried %s)\n", import_path, path);
@@ -1456,7 +1484,7 @@ static ASTModule *load_one_import(const char *import_path, const char **lib_root
     }
     /* 先递归加载该模块的 import，保证 typeck 时其 deps 已在 all_dep_mods 中 */
     for (int i = 0; i < dep->num_imports; i++) {
-        ASTModule *sub = load_one_import(dep->import_paths[i], lib_roots, n_lib_roots, entry_dir, defines, ndefines,
+        ASTModule *sub = load_one_import(dep->import_paths[i], lib_roots, n_lib_roots, dep_dir, defines, ndefines,
             all_dep_mods, all_dep_paths, n_all, max_all);
         if (!sub) {
             ast_module_free(dep);
