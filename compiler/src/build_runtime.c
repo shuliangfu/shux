@@ -53,20 +53,7 @@ static int build_patch_pipeline_gen_c(void) {
     }
   }
 
-  /* 追加 #include "pipeline_glue.c"，由 cc 编译时包含，不再读入并追写整份文件 */
-  {
-    const char *inc = "\n#include \"pipeline_glue.c\"\n";
-    size_t inc_len = strlen(inc);
-    if ((size_t)sz + inc_len + 1 > cap) { free(buf); return -1; }
-    memcpy(buf + sz, inc, inc_len + 1);
-    sz += (long)inc_len;
-  }
-
-  f = fopen("pipeline_gen.c", "wb");
-  if (!f) { free(buf); return -1; }
-  if (fwrite(buf, 1, (size_t)sz, f) != (size_t)sz) { fclose(f); free(buf); return -1; }
-  fclose(f);
-  free(buf);
+  /* 瘦 pipeline_gen.c：外部符号由 parser_su.o / typeck_su.o / codegen_su.o 链接提供，不再追加 pipeline_glue.c。 */
   return 0;
 }
 
@@ -233,7 +220,7 @@ int build_run_step(int step_id, const char *shu_path) {
     if (system(cmd) != 0) return -1;
     /* -E-extern 已生成 parser_* 符号，不再追加 ABI 包装，避免重复定义。 */
     n = (int)snprintf(cmd, sizeof(cmd),
-      "%s %s -c parser_gen.c -o parser_su.o", cc, cflags);
+      "perl -i -ne 'print unless /^struct shulang_slice_uint8_t/ && $seen++' parser_gen.c && %s %s -include ast.h -c parser_gen.c -o parser_su.o", cc, cflags);
     if (n <= 0 || n >= (int)sizeof(cmd)) return -1;
     if (system(cmd) != 0) return -1;
     n = (int)snprintf(cmd, sizeof(cmd),
@@ -278,7 +265,7 @@ int build_run_step(int step_id, const char *shu_path) {
     /* 阶段 1.1/1.2：用 shu 生成 pipeline_gen.c，再由 build_patch_pipeline_gen_c 修正。
      * 阶段 3：C 版 shu 无 -su，一律用 -E -E-extern 生成瘦 pipeline_gen.c，避免与 parser_su/typeck_su/codegen_su 重复符号。 */
     n = (int)snprintf(cmd, sizeof(cmd),
-      "%s -L .. -L src/lexer -L src/ast -L src/parser -L src/typeck -L src/codegen -L src/asm -E -E-extern src/pipeline/pipeline.su > pipeline_gen.c",
+      "%s -L .. -L src/lexer -L src/ast -L src/parser -L src/typeck -L src/codegen -L src/asm -L src/preprocess -E -E-extern src/pipeline/pipeline.su > pipeline_gen.c",
       shu_path);
     if (n <= 0 || n >= (int)sizeof(cmd)) return -1;
     if (system(cmd) != 0) return -1;
