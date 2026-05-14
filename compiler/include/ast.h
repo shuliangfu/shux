@@ -472,6 +472,14 @@ void ast_block_free(ASTBlock *b);
 void ast_expr_free(ASTExpr *e);
 
 /**
+ * 初始化 EXPR_MATCH 节点的 arms 子结构（num_arms=0，arms=NULL，matched_expr=NULL）。
+ * 供 parser 在 .su 中调用（ast.expr_init_match_enum），确保未初始化字段不会导致
+ * typeck/codegen 访问垃圾值崩溃。
+ * 参数：e 待初始化的 EXPR_MATCH 节点。
+ */
+void ast_expr_init_match_enum(ASTExpr *e);
+
+/**
  * 释放类型节点；若为 AST_TYPE_NAMED 会 free 其中的 name，其它种类仅 free 节点本身。
  * 参数：t 待释放的类型节点；可为 NULL。
  */
