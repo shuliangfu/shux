@@ -177,6 +177,52 @@ function ensure_i32_type_ref(arena: *ASTArena): i32 {
   return new_ref;
 }
 
+/** 在当前 arena 中取或分配 TYPE_BOOL，返回其 type_ref；供字面量 true/false 自设类型。 */
+function ensure_bool_type_ref(arena: *ASTArena): i32 {
+  let k: i32 = 1;
+  while (k <= arena.num_types) {
+    let tk: Type = ast_arena_type_get(arena, k);
+    if (tk.kind == TypeKind.TYPE_BOOL) {
+      return k;
+    }
+    k = k + 1;
+  }
+  let new_ref: i32 = ast_arena_type_alloc(arena);
+  if (new_ref == 0) {
+    return 0;
+  }
+  let ti: Type = ast_arena_type_get(arena, new_ref);
+  ti.kind = TypeKind.TYPE_BOOL;
+  ti.name_len = 0;
+  ti.elem_type_ref = 0;
+  ti.array_size = 0;
+  ast_arena_type_set(arena, new_ref, ti);
+  return new_ref;
+}
+
+/** 在当前 arena 中取或分配 TYPE_F64，返回其 type_ref；供字面量浮点自设类型。 */
+function ensure_f64_type_ref(arena: *ASTArena): i32 {
+  let k: i32 = 1;
+  while (k <= arena.num_types) {
+    let tk: Type = ast_arena_type_get(arena, k);
+    if (tk.kind == TypeKind.TYPE_F64) {
+      return k;
+    }
+    k = k + 1;
+  }
+  let new_ref: i32 = ast_arena_type_alloc(arena);
+  if (new_ref == 0) {
+    return 0;
+  }
+  let ti: Type = ast_arena_type_get(arena, new_ref);
+  ti.kind = TypeKind.TYPE_F64;
+  ti.name_len = 0;
+  ti.elem_type_ref = 0;
+  ti.array_size = 0;
+  ast_arena_type_set(arena, new_ref, ti);
+  return new_ref;
+}
+
 /** 按 dep 下标取 arena 并在 caller_arena 中得到对应 return_type_ref；ctx 由 typeck 入口传入。 */
 function get_dep_return_type_in_caller_arena(from_dep_index: i32, dep_return_type_ref: i32, caller_arena: *ASTArena, ctx: *PipelineDepCtx): i32 {
   if (from_dep_index < 0 || from_dep_index >= 32) {
@@ -400,13 +446,40 @@ function type_refs_equal(arena: *ASTArena, a: i32, b: i32): bool {
  */
 function check_expr_impl(module: *Module, arena: *ASTArena, expr_ref: i32, return_type_ref: i32, ctx: *PipelineDepCtx): i32 {
   let e: Expr = ast_arena_expr_get(arena, expr_ref);
-  /* EXPR_FLOAT_LIT：填写 64 位位模式供 asm 后端发射 double 立即数（常量池/位模式）。 */
+  /* EXPR_FLOAT_LIT：填写 64 位位模式供 asm 后端发射 double 立即数（常量池/位模式），并自设 resolved_type_ref。 */
   if (e.kind == ExprKind.EXPR_FLOAT_LIT) {
     e.float_bits_lo = typeck_float64_bits_lo(e.float_val);
     e.float_bits_hi = typeck_float64_bits_hi(e.float_val);
     ast_arena_expr_set(arena, expr_ref, e);
+    let ft: i32 = ensure_f64_type_ref(arena);
+    if (ft != 0) {
+      e.resolved_type_ref = ft;
+      ast_arena_expr_set(arena, expr_ref, e);
+    }
+    return 0;
+  }
+  /* 字面量自设类型，确保后续类型比较前 resolved_type_ref 已有效 */
+  if (e.kind == ExprKind.EXPR_LIT) {
+    let it: i32 = ensure_i32_type_ref(arena);
+    if (it != 0) {
+      e.resolved_type_ref = it;
+      ast_arena_expr_set(arena, expr_ref, e);
+    }
+    return 0;
+  }
+  if (e.kind == ExprKind.EXPR_BOOL_LIT) {
+    let bt: i32 = ensure_bool_type_ref(arena);
+    if (bt != 0) {
+      e.resolved_type_ref = bt;
+      ast_arena_expr_set(arena, expr_ref, e);
+    }
+    return 0;
   }
   if (e.kind == ExprKind.EXPR_IF || e.kind == ExprKind.EXPR_TERNARY) {
+    /* 先递归条件，确保 resolved_type_ref 已设（如比较运算现在也会自设 bool 类型），再判断是否为 bool */
+    if (check_expr(module, arena, e.if_cond_ref, return_type_ref, ctx) != 0) {
+      return -1;
+    }
     if (!ref_is_null(e.if_cond_ref)) {
       if (!type_ref_is_bool(arena, expr_type_ref(arena, e.if_cond_ref))) {
         return -1;
@@ -469,6 +542,13 @@ function check_expr_impl(module: *Module, arena: *ASTArena, expr_ref: i32, retur
   if (e.kind == ExprKind.EXPR_ASSIGN || e.kind == ExprKind.EXPR_ADD_ASSIGN || e.kind == ExprKind.EXPR_SUB_ASSIGN || e.kind == ExprKind.EXPR_MUL_ASSIGN || e.kind == ExprKind.EXPR_DIV_ASSIGN || e.kind == ExprKind.EXPR_MOD_ASSIGN || e.kind == ExprKind.EXPR_BITAND_ASSIGN || e.kind == ExprKind.EXPR_BITOR_ASSIGN || e.kind == ExprKind.EXPR_BITXOR_ASSIGN || e.kind == ExprKind.EXPR_SHL_ASSIGN || e.kind == ExprKind.EXPR_SHR_ASSIGN) {
     let left_ref: i32 = e.binop_left_ref;
     let right_ref: i32 = e.binop_right_ref;
+    /* 先递归解析左右子表达式，确保 resolved_type_ref 已设，再比较类型（与 C 版 typeck_expr_sym 一致） */
+    if (check_expr(module, arena, left_ref, return_type_ref, ctx) != 0) {
+      return -1;
+    }
+    if (check_expr(module, arena, right_ref, return_type_ref, ctx) != 0) {
+      return -1;
+    }
     if (!ref_is_null(left_ref) && !ref_is_null(right_ref)) {
       let lt: i32 = expr_type_ref(arena, left_ref);
       let rt: i32 = expr_type_ref(arena, right_ref);
@@ -476,24 +556,21 @@ function check_expr_impl(module: *Module, arena: *ASTArena, expr_ref: i32, retur
         return -1;
       }
     }
-    if (check_expr(module, arena, left_ref, return_type_ref, ctx) != 0) {
-      return -1;
-    }
-    if (check_expr(module, arena, right_ref, return_type_ref, ctx) != 0) {
-      return -1;
-    }
     return 0;
   }
   if (e.kind == ExprKind.EXPR_RETURN) {
-    if (!ref_is_null(return_type_ref)) {
-      let op_ref: i32 = e.unary_operand_ref;
-      if (!ref_is_null(op_ref)) {
-        if (!type_refs_equal(arena, expr_type_ref(arena, op_ref), return_type_ref)) {
-          return -1;
-        }
+    let op_ref: i32 = e.unary_operand_ref;
+    /* 先递归解析操作数，确保 resolved_type_ref 已设（如字面量现在会自设类型），再比较 */
+    if (check_expr(module, arena, op_ref, return_type_ref, ctx) != 0) {
+      return -1;
+    }
+    if (!ref_is_null(return_type_ref) && !ref_is_null(op_ref)) {
+      let got: i32 = expr_type_ref(arena, op_ref);
+      if (!ref_is_null(got) && !type_refs_equal(arena, got, return_type_ref)) {
+        return -1;
       }
     }
-    return check_expr(module, arena, e.unary_operand_ref, return_type_ref, ctx);
+    return 0;
   }
   if (e.kind == ExprKind.EXPR_PANIC) {
     return check_expr(module, arena, e.unary_operand_ref, return_type_ref, ctx);
@@ -584,7 +661,19 @@ function check_expr_impl(module: *Module, arena: *ASTArena, expr_ref: i32, retur
     if (check_expr(module, arena, e.binop_left_ref, return_type_ref, ctx) != 0) {
       return -1;
     }
-    return check_expr(module, arena, e.binop_right_ref, return_type_ref, ctx);
+    if (check_expr(module, arena, e.binop_right_ref, return_type_ref, ctx) != 0) {
+      return -1;
+    }
+    /* 比较/逻辑运算结果类型为 bool；算术运算结果类型由左右子表达式推导（与 C 版 typeck_expr_sym 一致） */
+    if (e.kind == ExprKind.EXPR_EQ || e.kind == ExprKind.EXPR_NE || e.kind == ExprKind.EXPR_LT || e.kind == ExprKind.EXPR_LE
+        || e.kind == ExprKind.EXPR_GT || e.kind == ExprKind.EXPR_GE || e.kind == ExprKind.EXPR_LOGAND || e.kind == ExprKind.EXPR_LOGOR) {
+      let bt: i32 = ensure_bool_type_ref(arena);
+      if (bt != 0) {
+        e.resolved_type_ref = bt;
+        ast_arena_expr_set(arena, expr_ref, e);
+      }
+    }
+    return 0;
   }
   if (e.kind == ExprKind.EXPR_NEG || e.kind == ExprKind.EXPR_BITNOT || e.kind == ExprKind.EXPR_LOGNOT) {
     return check_expr(module, arena, e.unary_operand_ref, return_type_ref, ctx);
