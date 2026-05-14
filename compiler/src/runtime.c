@@ -1366,10 +1366,21 @@ static void resolve_import_file_path_multi(const char **lib_roots, int n_lib_roo
     if (entry_dir && entry_dir[0] && strchr(import_path, '.') == NULL) {
         (void)snprintf(path, path_size, "%s/%.255s.su", entry_dir, import_path);
     }
-    /* 带点 import（如 arch.x86_64）也应在 dep 所在目录查找：backend.su 在 src/asm/ 导入 arch.x86_64 → src/asm/arch/x86_64.su */
+    /* 带点 import（如 arch.x86_64）也应在 dep 所在目录查找：backend.su 在 src/asm/ 导入 arch.x86_64 → src/asm/arch/x86_64.su。
+     * 若 import 首段与 entry_dir 末段同名（如 src/asm/ 中 import asm.types），则跳过首段避免重复。 */
     if (entry_dir && entry_dir[0] && strchr(import_path, '.') != NULL && path_size >= 16) {
+        const char *eff = import_path;
+        /* 检查 import 首段是否与 entry_dir 末段同名 */
+        const char *last_slash = strrchr(entry_dir, '/');
+        const char *dir_tail = last_slash ? last_slash + 1 : entry_dir;
+        size_t tail_len = strlen(dir_tail);
+        const char *first_dot = strchr(import_path, '.');
+        if (first_dot && (size_t)(first_dot - import_path) == tail_len &&
+            strncmp(import_path, dir_tail, tail_len) == 0) {
+            eff = first_dot + 1; /* 跳过去重的包前缀：src/asm/asm/types.su → src/asm/types.su */
+        }
         size_t off = (size_t)snprintf(path, path_size, "%s/", entry_dir);
-        for (const char *s = import_path; *s && off + 1 < path_size; s++)
+        for (const char *s = eff; *s && off + 1 < path_size; s++)
             path[off++] = (char)(*s == '.' ? '/' : *s);
         if (off + 5 <= path_size)
             snprintf(path + off, path_size - off, ".su");
