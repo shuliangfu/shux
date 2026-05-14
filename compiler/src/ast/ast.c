@@ -9,6 +9,16 @@
 
 #include "ast.h"
 #include <stdlib.h>
+#include <string.h>
+
+/* ast_expr_init_match_enum：C 路径（-E-extern 生成 parser_gen.c）需要 C 侧提供；
+ * SU 自举链接（shu_su）中 ast_su.o 已提供，通过 -DSHU_USE_SU_AST 排除避免重复符号。 */
+#ifndef SHU_USE_SU_AST
+void ast_expr_init_match_enum(ASTExpr *e) {
+    if (!e) return;
+    memset(&e->value.match_expr, 0, sizeof(e->value.match_expr));
+}
+#endif
 
 /**
  * 释放表达式树；功能、参数、返回值见 ast.h 中 ast_expr_free 声明处注释。
