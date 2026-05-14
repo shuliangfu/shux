@@ -37,23 +37,37 @@ static int build_patch_pipeline_gen_c(void) {
   buf[sz] = '\0';
   fclose(f);
 
-  /* 若调用了 parser_parse_into 但缺少其 extern，则插入（codegen 有时未收集到间接调用） */
-  if (strstr(buf, "parser_parse_into(arena") != NULL && strstr(buf, "parser_parse_into(struct ast_ASTArena") == NULL) {
-    const char *anchor = "extern void parser_parse_into_init(";
-    char *pos = strstr(buf, anchor);
-    if (pos) {
-      const char *ins = "extern struct parser_ParseIntoResult parser_parse_into(struct ast_ASTArena *, struct ast_Module *, struct shulang_slice_uint8_t *);\n";
-      size_t ins_len = strlen(ins);
-      size_t tail = (size_t)((buf + sz) - pos) + 1;
-      if ((size_t)(pos - buf) + ins_len + tail <= cap) {
-        memmove(pos + ins_len, pos, tail);
-        memcpy(pos, ins, ins_len);
-        sz = (long)(strlen(buf));
+  /* 在所有 #include 之后插入 parser_parse_into / parser_parse_into_buf 的 extern 声明 */
+  {
+    const char *extras =
+      "extern struct parser_ParseIntoResult parser_parse_into(struct ast_ASTArena *, struct ast_Module *, struct shulang_slice_uint8_t *);\n"
+      "extern struct parser_ParseIntoResult parser_parse_into_buf(struct ast_ASTArena *, struct ast_Module *, uint8_t *, int32_t);\n";
+    /* 找到最后一个 #include 行并在其后插入 */
+    char *last_inc = NULL;
+    char *p = buf;
+    while (*p) {
+      if (strncmp(p, "#include", 8) == 0) last_inc = p;
+      p++;
+    }
+    if (last_inc) {
+      /* 跳到该行末尾 */
+      while (*last_inc && *last_inc != '\n') last_inc++;
+      if (*last_inc == '\n') last_inc++; /* 移到下一行开头 */
+      size_t ins_len = strlen(extras);
+      size_t tail = (size_t)((buf + sz) - last_inc) + 1;
+      if ((size_t)(last_inc - buf) + ins_len + tail <= cap) {
+        memmove(last_inc + ins_len, last_inc, tail);
+        memcpy(last_inc, extras, ins_len);
       }
     }
   }
 
-  /* 瘦 pipeline_gen.c：外部符号由 parser_su.o / typeck_su.o / codegen_su.o 链接提供，不再追加 pipeline_glue.c。 */
+  /* 瘦 pipeline_gen.c：外部符号由 parser_su.o / typeck_su.o / codegen_su.o 链接提供 */
+  f = fopen("pipeline_gen.c", "wb");
+  if (!f) { free(buf); return -1; }
+  if (fwrite(buf, 1, strlen(buf), f) != strlen(buf)) { fclose(f); free(buf); return -1; }
+  fclose(f);
+  free(buf);
   return 0;
 }
 
