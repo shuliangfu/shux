@@ -370,15 +370,20 @@ function emit_type(arena: *ASTArena, out: *CodegenOutBuf, type_ref: i32, struct_
     return append_byte(out, 42);
   }
   if (t.kind == TypeKind.TYPE_NAMED && t.name_len > 0) {
+    let s: [8]u8 = [115, 116, 114, 117, 99, 116, 32, 0];
+    if (emit_bytes_8(out, s, 7) != 0) {
+      return -1;
+    }
     if (struct_prefix != 0 as *u8 && struct_prefix_len > 0) {
-      let s: [8]u8 = [115, 116, 114, 117, 99, 116, 32, 0];
-      if (emit_bytes_8(out, s, 7) != 0) {
-        return -1;
-      }
       if (emit_bytes_from_ptr(out, struct_prefix, struct_prefix_len) != 0) {
         return -1;
       }
-      return emit_bytes_64(out, t.name, t.name_len);
+    } else {
+      /* 无前缀时默认 ast_，生成 struct ast_ASTArena / struct ast_Type 等 */
+      let ast_p: [4]u8 = [97, 115, 116, 95];
+      if (emit_bytes_4(out, ast_p, 4) != 0) {
+        return -1;
+      }
     }
     return emit_bytes_64(out, t.name, t.name_len);
   }
