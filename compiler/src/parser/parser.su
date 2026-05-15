@@ -2240,8 +2240,8 @@ function parse_one_function_impl(out: *OneFuncResult, arena: *ASTArena, lex: Lex
   let dummy_const_names: [64][64]u8 = [empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64];
   let dummy_const_lens: [64]i32 = [];
   let dummy_const_vals: [64]i32 = [];
-  let dummy_let_names: [64][64]u8 = [empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64];
-  let dummy_let_lens: [64]i32 = [];
+  let dummy_let_names: [128][64]u8 = [empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64];
+  let dummy_let_lens: [128]i32 = [];
   let dummy_let_vals: [128]i32 = [];
   let dummy_let_refs: [128]i32 = [];
   let dummy_loop_refs: [8]i32 = [];
@@ -2260,10 +2260,10 @@ function parse_one_function_impl(out: *OneFuncResult, arena: *ASTArena, lex: Lex
   let const_name_lens: [64]i32 = dummy_const_lens;
   let const_init_vals: [64]i32 = dummy_const_vals;
   let num_lets: i32 = 0;
-  let let_names: [64][64]u8 = dummy_let_names;
-  let let_name_lens: [64]i32 = dummy_let_lens;
-  let let_init_vals: [64]i32 = dummy_let_vals;
-  let let_init_refs: [64]i32 = dummy_let_refs;
+  let let_names: [128][64]u8 = dummy_let_names;
+  let let_name_lens: [128]i32 = dummy_let_lens;
+  let let_init_vals: [128]i32 = dummy_let_vals;
+  let let_init_refs: [128]i32 = dummy_let_refs;
   let has_if_expr: bool = false;
   let if_cond_true: bool = false;
   let if_then_val: i32 = 0;
@@ -4720,8 +4720,8 @@ function parse_one_function_buf_into(out: *OneFuncResult, lex: Lexer, data: *u8,
   let dummy_const_names: [64][64]u8 = [empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64];
   let dummy_const_lens: [64]i32 = [];
   let dummy_const_vals: [64]i32 = [];
-  let dummy_let_names: [64][64]u8 = [empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64];
-  let dummy_let_lens: [64]i32 = [];
+  let dummy_let_names: [128][64]u8 = [empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64, empty64];
+  let dummy_let_lens: [128]i32 = [];
   let dummy_let_vals: [128]i32 = [];
   let dummy_let_refs: [128]i32 = [];
   let dummy_loop_refs: [8]i32 = [];
