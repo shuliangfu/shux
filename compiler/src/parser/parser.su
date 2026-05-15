@@ -310,8 +310,65 @@ function parse_primary_into(arena: *ASTArena, lex: Lexer, source: []u8, out: *Pa
     ast_arena_expr_set(arena, ref, e);
     out.ok = true;
     out.expr_ref = ref;
-    out.next_lex = r.next_lex;
-    return;
+    lex = r.next_lex;
+
+    /* 后缀链：处理 .field / [index] */
+    while (true) {
+      lexer_next_into(&r, lex, source);
+      if (r.tok.kind == TokenKind.TOKEN_DOT) {
+        lex_from_next_into(&lex, r);
+        lexer_next_into(&r, lex, source);
+        if (r.tok.kind != TokenKind.TOKEN_IDENT) {
+          out.next_lex = lex; return;
+        }
+        let fa_ref: i32 = ast_arena_expr_alloc(arena);
+        if (fa_ref == 0) { out.ok = false; return; }
+        let fe: Expr = ast_arena_expr_get(arena, fa_ref);
+        fe.kind = ExprKind.EXPR_FIELD_ACCESS;
+        fe.field_access_base_ref = out.expr_ref;
+        fe.field_access_field_len = r.tok.ident_len;
+        if (fe.field_access_field_len > 63) { fe.field_access_field_len = 63; }
+        let fstart_lex: Lexer = r.next_lex;
+        let fstart: usize = fstart_lex.pos - r.tok.ident_len;
+        let fi: i32 = 0;
+        while (fi < fe.field_access_field_len && fstart + fi < source.length) {
+          fe.field_access_field_name[fi] = source[fstart + fi];
+          fi = fi + 1;
+        }
+        while (fi < 64) { fe.field_access_field_name[fi] = 0; fi = fi + 1; }
+        fe.line = 0; fe.col = 0;
+        expr_set_common_zeros(&fe);
+        ast_arena_expr_set(arena, fa_ref, fe);
+        out.expr_ref = fa_ref;
+        lex = r.next_lex;
+      } else if (r.tok.kind == TokenKind.TOKEN_LBRACKET) {
+        let base_ref_saved: i32 = out.expr_ref;
+        lex_from_next_into(&lex, r);
+        parse_expr_into(arena, lex, source, out);
+        if (!out.ok) { return; }
+        let idx_ref_2: i32 = out.expr_ref;
+        lex = out.next_lex;
+        lexer_next_into(&r, lex, source);
+        if (r.tok.kind != TokenKind.TOKEN_RBRACKET) {
+          out.ok = false; return;
+        }
+        lex = r.next_lex;
+        let idx_ref: i32 = ast_arena_expr_alloc(arena);
+        if (idx_ref == 0) { out.ok = false; return; }
+        let ie: Expr = ast_arena_expr_get(arena, idx_ref);
+        ie.kind = ExprKind.EXPR_INDEX;
+        ie.index_base_ref = base_ref_saved;
+        ie.index_index_ref = idx_ref_2;
+        ie.index_base_is_slice = 0;
+        ie.line = 0; ie.col = 0;
+        expr_set_common_zeros(&ie);
+        ast_arena_expr_set(arena, idx_ref, ie);
+        out.expr_ref = idx_ref;
+      } else {
+        out.next_lex = lex;
+        return;
+      }
+    }
   }
   if (r.tok.kind == TokenKind.TOKEN_LPAREN) {
     lex_from_next_into(&lex, r);
