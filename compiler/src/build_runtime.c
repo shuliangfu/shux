@@ -37,27 +37,54 @@ static int build_patch_pipeline_gen_c(void) {
   buf[sz] = '\0';
   fclose(f);
 
-  /* 在所有 #include 之后插入 parser_parse_into / parser_parse_into_buf 的 extern 声明 */
+  /* 去重 struct shulang_slice_uint8_t：只保留第一个出现，删除后续重复 */
+  {
+    const char *pat = "struct shulang_slice_uint8_t { uint8_t *data; size_t length; };";
+    size_t pat_len = strlen(pat);
+    char *first = strstr(buf, pat);
+    if (first) {
+      char *next = first + pat_len;
+      while ((next = strstr(next, pat)) != NULL) {
+        /* 向前找到该行的开头（行首或前一个换行后） */
+        char *line_start = next;
+        while (line_start > buf && *(line_start - 1) != '\n') line_start--;
+        /* 找到该行末尾的换行 */
+        char *line_end = next + pat_len;
+        while (*line_end && *line_end != '\n') line_end++;
+        if (*line_end == '\n') line_end++;
+        /* 删除从 line_start 到 line_end 的内容 */
+        size_t remove_len = (size_t)(line_end - line_start);
+        size_t remaining = (size_t)((buf + sz) - line_end) + 1;
+        memmove(line_start, line_end, remaining);
+        next = line_start; /* 从删除位置继续搜索 */
+      }
+    }
+  }
+
+  /* 在 #include 块之后立即插入 parser_parse_into_buf 的 extern 声明 */
   {
     const char *extras =
-      "extern struct parser_ParseIntoResult parser_parse_into(struct ast_ASTArena *, struct ast_Module *, struct shulang_slice_uint8_t *);\n"
       "extern struct parser_ParseIntoResult parser_parse_into_buf(struct ast_ASTArena *, struct ast_Module *, uint8_t *, int32_t);\n";
-    /* 找到最后一个 #include 行并在其后插入 */
-    char *last_inc = NULL;
-    char *p = buf;
-    while (*p) {
-      if (strncmp(p, "#include", 8) == 0) last_inc = p;
-      p++;
+    /* 找到 shulang_panic_ 函数之前的位置（紧接 #include 块之后） */
+    char *ins_point = strstr(buf, "static inline void shulang_panic_");
+    if (!ins_point) {
+      /* 回退：找最后一个 #include */
+      char *p = buf;
+      while (*p) {
+        if (strncmp(p, "#include", 8) == 0) ins_point = p;
+        p++;
+      }
+      if (ins_point) {
+        while (*ins_point && *ins_point != '\n') ins_point++;
+        if (*ins_point == '\n') ins_point++;
+      }
     }
-    if (last_inc) {
-      /* 跳到该行末尾 */
-      while (*last_inc && *last_inc != '\n') last_inc++;
-      if (*last_inc == '\n') last_inc++; /* 移到下一行开头 */
+    if (ins_point) {
       size_t ins_len = strlen(extras);
-      size_t tail = (size_t)((buf + sz) - last_inc) + 1;
-      if ((size_t)(last_inc - buf) + ins_len + tail <= cap) {
-        memmove(last_inc + ins_len, last_inc, tail);
-        memcpy(last_inc, extras, ins_len);
+      size_t remaining = (size_t)((buf + sz) - ins_point) + 1;
+      if ((size_t)(ins_point - buf) + ins_len + remaining <= cap) {
+        memmove(ins_point + ins_len, ins_point, remaining);
+        memcpy(ins_point, extras, ins_len);
       }
     }
   }
@@ -216,13 +243,24 @@ int build_run_step(int step_id, const char *shu_path) {
 
   switch (step_id) {
   case 0:
-    /* 阶段 3.2 / 6.4：编 main、runtime_driver（带 SU_PREPROCESS 使 preprocess() 在 .su 路径）、preprocess_fallback（不覆盖 preprocess.o）。 */
+    /* 阶段 3.2 / 6.4：编 main、runtime_driver（带 SU_PREPROCESS 使 preprocess() 在 .su 路径）、preprocess_fallback（不覆盖 preprocess.o）。
+     * 同时编译所有 C 侧模块，供 step 5 链接（runtime_driver 仍引用了部分 C 侧函数）。 */
     n = (int)snprintf(cmd, sizeof(cmd),
       "%s %s -c -o src/main.o src/main.c && "
       "%s %s -c -o src/runtime.o src/runtime.c && "
       "%s %s -DSHU_USE_SU_PREPROCESS -c -o src/runtime_driver.o src/runtime.c && "
-      "%s %s -DSHU_USE_SU_PREPROCESS -c -o src/preprocess_fallback.o src/preprocess.c",
-      cc, cflags, cc, cflags, cc, cflags_driver, cc, cflags);
+      "%s %s -DSHU_USE_SU_PREPROCESS -c -o src/preprocess_fallback.o src/preprocess.c && "
+      "%s %s -c -o src/lexer/lexer.o src/lexer/lexer.c && "
+      "%s %s -DSHU_USE_SU_AST -c -o src/ast/ast.o src/ast/ast.c && "
+      "%s %s -c -o src/parser/parser.o src/parser/parser.c && "
+      "%s %s -c -o src/typeck/typeck.o src/typeck/typeck.c && "
+      "%s %s -c -o src/codegen/codegen.o src/codegen/codegen.c && "
+      "%s %s -c -o src/lsp/lsp_diag.o src/lsp/lsp_diag.c && "
+      "%s %s -c -o std_fs_shim.o src/std_fs_shim.c && "
+      "%s %s -c -o su_stubs.o src/su_stubs.c",
+      cc, cflags, cc, cflags, cc, cflags_driver, cc, cflags,
+      cc, cflags, cc, cflags, cc, cflags, cc, cflags,
+      cc, cflags, cc, cflags, cc, cflags, cc, cflags);
     if (n <= 0 || n >= (int)sizeof(cmd)) return -1;
     return system(cmd);
   case 6: {
@@ -292,7 +330,7 @@ int build_run_step(int step_id, const char *shu_path) {
     return system(cmd);
   case 3:
     n = (int)snprintf(cmd, sizeof(cmd),
-      "%s -L .. -L src/lexer -L src/ast -L src/parser -L src/typeck -L src/codegen src/main.su -E > driver_gen.c",
+      "%s -L .. -L src/lexer -L src/ast -L src/parser -L src/typeck -L src/codegen -L src/preprocess -E -E-extern src/main.su > driver_gen.c",
       shu_path);
     if (n <= 0 || n >= (int)sizeof(cmd)) return -1;
     return system(cmd);
@@ -302,10 +340,13 @@ int build_run_step(int step_id, const char *shu_path) {
     if (n <= 0 || n >= (int)sizeof(cmd)) return -1;
     return system(cmd);
   case 5:
-    /* 阶段 3.2/3.3、6.4：链 runtime_driver.o（含 preprocess()，step 0 已带 -DSHU_USE_SU_PREPROCESS）+ preprocess_fallback.o + preprocess_su.o。 */
+    /* 阶段 3.2/3.3、6.4：链 runtime_driver.o（含 preprocess()，step 0 已带 -DSHU_USE_SU_PREPROCESS）+ preprocess_fallback.o + preprocess_su.o
+     * + 所有 C 侧 .o（仍被 runtime_driver 的部分路径引用）。 */
     n = (int)snprintf(cmd, sizeof(cmd),
       "%s %s -DSHU_USE_SU_DRIVER -DSHU_USE_SU_PIPELINE -DSHU_USE_SU_FRONTEND -o shu "
-      "src/main.o src/runtime_driver.o src/preprocess_fallback.o preprocess_su.o ast_su.o token_su.o lexer_su.o parser_su.o typeck_su.o codegen_su.o driver_su.o pipeline_su.o",
+      "src/main.o src/runtime_driver.o src/preprocess_fallback.o "
+      "src/lexer/lexer.o src/ast/ast.o src/parser/parser.o src/typeck/typeck.o src/codegen/codegen.o src/lsp/lsp_diag.o std_fs_shim.o su_stubs.o "
+      "preprocess_su.o ast_su.o token_su.o lexer_su.o parser_su.o typeck_su.o codegen_su.o driver_su.o pipeline_su.o",
       cc, cflags);
     if (n <= 0 || n >= (int)sizeof(cmd)) return -1;
     return system(cmd);
