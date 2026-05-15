@@ -1507,6 +1507,46 @@ function parse_body_lets_into(arena: *ASTArena, lex: Lexer, source: []u8, out: *
           }
         }
       }
+    } else if (r.tok.kind == TokenKind.TOKEN_TRUE || r.tok.kind == TokenKind.TOKEN_FALSE) {
+      /* bool 字面量：创建 EXPR_BOOL_LIT 表达式并写入 arena，使 typeck 可以检查 let x: i32 = true 的类型不匹配 */
+      if (is_let) {
+        let bool_ref: i32 = ast_arena_expr_alloc(arena);
+        if (bool_ref != 0) {
+          let be: Expr = ast_arena_expr_get(arena, bool_ref);
+          be.kind = ExprKind.EXPR_BOOL_LIT;
+          be.resolved_type_ref = 0;
+          be.line = 0;
+          be.col = 0;
+          be.int_val = (if (r.tok.kind == TokenKind.TOKEN_TRUE) { 1 } else { 0 });
+          ast.expr_init_match_enum(&be);
+          be.binop_left_ref = 0;
+          be.binop_right_ref = 0;
+          be.unary_operand_ref = 0;
+          be.if_cond_ref = 0;
+          be.if_then_ref = 0;
+          be.if_else_ref = 0;
+          be.block_ref = 0;
+          be.field_access_base_ref = 0;
+          be.field_access_field_len = 0;
+          be.field_access_is_enum_variant = 0;
+          be.field_access_offset = 0;
+          be.index_base_ref = 0;
+          be.index_index_ref = 0;
+          be.index_base_is_slice = 0;
+          be.call_callee_ref = 0;
+          be.call_num_args = 0;
+          be.method_call_base_ref = 0;
+          be.method_call_name_len = 0;
+          be.method_call_num_args = 0;
+          be.const_folded_val = 0;
+          be.const_folded_valid = 0;
+          be.index_proven_in_bounds = 0;
+          ast_arena_expr_set(arena, bool_ref, be);
+          out.let_init_refs[out.num_lets] = bool_ref;
+        }
+      }
+      lex_from_result_ptr_into(&lex, &r);
+      lexer_next_into(&r, lex, source);
     } else if (r.tok.kind == TokenKind.TOKEN_INT) {
       if (is_let) {
         out.let_init_vals[out.num_lets] = r.tok.int_val;
