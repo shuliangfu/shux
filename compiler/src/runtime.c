@@ -3756,7 +3756,7 @@ int driver_get_argv_i(int argc, char **argv, int i, char *buf, int max) {
 }
 
 /** 6.2 静态 arena/module 缓冲，供 driver_run_su_emit_su 避免栈上超大数组（ast_ASTArena 约 9MB+）。 */
-#define DRIVER_ARENA_STATIC_SIZE (12 * 1024 * 1024)
+#define DRIVER_ARENA_STATIC_SIZE (20 * 1024 * 1024)
 #define DRIVER_MODULE_STATIC_SIZE (512 * 1024)
 static uint8_t driver_arena_static[DRIVER_ARENA_STATIC_SIZE];
 static uint8_t driver_module_static[DRIVER_MODULE_STATIC_SIZE];
