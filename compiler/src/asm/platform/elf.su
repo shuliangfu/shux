@@ -7,12 +7,6 @@
 
 import codegen;
 
-/** 机器码缓冲区：data[0..len-1] 为已编码指令；最大长度 32768 字节。 */
-struct ElfCodeBuf {
-  data: [32768]u8;
-  len: i32;
-}
-
 /** 局部标签：名称与在 .text 中的偏移（用于 jz/jmp 补丁）。 */
 struct ElfLabelEntry {
   name: [64]u8;
@@ -43,16 +37,20 @@ struct ElfSymEntry {
   offset: i32;
 }
 
-/** ELF 代码生成上下文：编码阶段填充 code/labels/patches/relocs/syms，resolve 后写 ELF。e_machine 由 backend 在编码前设置（62=x86_64，183=arm64）。 */
+/**
+ * ELF 代码生成上下文：大块 code_data 置于末尾，便于自举 typeck 在 *ElfCodegenCtx 上解析前几项标量字段；
+ * 行为与旧嵌套 ElfCodeBuf 等价（code_len + code_data[0..len-1]）。
+ */
 struct ElfCodegenCtx {
-  code: ElfCodeBuf;
-  labels: [64]ElfLabelEntry;
+  code_len: i32;
+  /** 多函数 + 分支/循环内部标签；旧 64 条易溢出致 elf_add_label 失败。 */
+  labels: [512]ElfLabelEntry;
   num_labels: i32;
-  patches: [128]ElfPatchEntry;
+  patches: [512]ElfPatchEntry;
   num_patches: i32;
-  relocs: [128]ElfRelocEntry;
+  relocs: [512]ElfRelocEntry;
   num_relocs: i32;
-  syms: [256]ElfSymEntry;
+  syms: [512]ElfSymEntry;
   num_syms: i32;
   /** ELF e_machine：62=EM_X86_64，183=EM_AARCH64；write_elf_o_to_buf 写入 ehdr[18..19]。 */
   e_machine: i32;
@@ -60,6 +58,8 @@ struct ElfCodegenCtx {
   reloc_type_r_pc32: i32;
   /** arm64 用：enc_prologue 写入，enc_epilogue 读出以发射 add sp, sp, #current_frame_size。 */
   current_frame_size: i32;
+  /** 已编码机器码字节；容量 1MiB，与 CodegenOutBuf 一致。 */
+  code_data: [1048576]u8;
 }
 
 /** 将 i32 低 8 位转为 u8（typeck 要求赋值给 [N]u8 时为 u8）。 */
@@ -71,30 +71,30 @@ function elf_to_u8(val: i32): u8 {
 
 /** 重置 elf_ctx，用于新一轮编码前。e_machine 不在此清零，由 backend 在编码前设置。 */
 function elf_ctx_reset(ctx: *ElfCodegenCtx): void {
-  ctx.code.len = 0;
+  ctx.code_len = 0;
   ctx.num_labels = 0;
   ctx.num_patches = 0;
   ctx.num_relocs = 0;
   ctx.num_syms = 0;
 }
 
-/** 向 ctx.code 追加 n 字节 ptr[0..n-1]。返回 0 成功，缓冲区满或 n 会导致越界时返回 -1。上界 32768 与 ElfCodeBuf 一致。 */
+/** 向 ctx.code_data 追加 n 字节 ptr[0..n-1]。返回 0 成功，缓冲区满或 n 会导致越界时返回 -1。上界与 code_data 长度一致（1MiB）。 */
 function append_elf_bytes(ctx: *ElfCodegenCtx, ptr: *u8, n: i32): i32 {
-  if (n < 0 || ctx.code.len + n > 32768) {
+  if (n < 0 || ctx.code_len + n > 1048576) {
     return -1;
   }
   let i: i32 = 0;
   while (i < n) {
-    ctx.code.data[ctx.code.len] = ptr[i];
-    ctx.code.len = ctx.code.len + 1;
+    ctx.code_data[ctx.code_len] = ptr[i];
+    ctx.code_len = ctx.code_len + 1;
     i = i + 1;
   }
   return 0;
 }
 
-/** 记录标签：名称为 name[0..name_len-1]，当前 code.len 即其偏移。 */
+/** 记录标签：名称为 name[0..name_len-1]，当前 code_len 即其偏移。 */
 function elf_add_label(ctx: *ElfCodegenCtx, name: [64]u8, name_len: i32): i32 {
-  if (ctx.num_labels >= 64) {
+  if (ctx.num_labels >= 512) {
     return -1;
   }
   let k: i32 = 0;
@@ -103,7 +103,7 @@ function elf_add_label(ctx: *ElfCodegenCtx, name: [64]u8, name_len: i32): i32 {
     k = k + 1;
   }
   ctx.labels[ctx.num_labels].name_len = name_len;
-  ctx.labels[ctx.num_labels].offset = ctx.code.len;
+  ctx.labels[ctx.num_labels].offset = ctx.code_len;
   ctx.num_labels = ctx.num_labels + 1;
   return 0;
 }
@@ -115,7 +115,7 @@ function elf_add_patch(ctx: *ElfCodegenCtx, rel32_offset: i32, name: [64]u8, nam
 
 /** 记录待补丁（arm64 用）：imm_bits 26=B/BL，19=CBZ/CBNZ/B.cond。 */
 function elf_add_patch_with_bits(ctx: *ElfCodegenCtx, rel32_offset: i32, name: [64]u8, name_len: i32, imm_bits: i32): i32 {
-  if (ctx.num_patches >= 128) {
+  if (ctx.num_patches >= 512) {
     return -1;
   }
   ctx.patches[ctx.num_patches].rel32_offset = rel32_offset;
@@ -132,7 +132,7 @@ function elf_add_patch_with_bits(ctx: *ElfCodegenCtx, rel32_offset: i32, name: [
 
 /** 记录重定位：offset 为 .text 内 rel32 位置，name 为符号名。 */
 function elf_add_reloc(ctx: *ElfCodegenCtx, offset: i32, name: [64]u8, name_len: i32): i32 {
-  if (ctx.num_relocs >= 128) {
+  if (ctx.num_relocs >= 512) {
     return -1;
   }
   ctx.relocs[ctx.num_relocs].offset = offset;
@@ -148,7 +148,7 @@ function elf_add_reloc(ctx: *ElfCodegenCtx, offset: i32, name: [64]u8, name_len:
 
 /** 记录导出符号（函数）：名称与在 .text 中的偏移。 */
 function elf_add_sym(ctx: *ElfCodegenCtx, name: [64]u8, name_len: i32, offset: i32): i32 {
-  if (ctx.num_syms >= 256) {
+  if (ctx.num_syms >= 512) {
     return -1;
   }
   let k: i32 = 0;
@@ -200,8 +200,8 @@ function elf_resolve_patches(ctx: *ElfCodegenCtx): i32 {
     delta = target_offset - next_insn;
     if (ctx.e_machine == 183) {
       let imm_bits: i32 = ctx.patches[p].patch_imm_bits;
-      let insn_lo: i32 = (ctx.code.data[rel32_offset] & 255) | ((ctx.code.data[rel32_offset + 1] & 255) << 8);
-      let insn_hi: i32 = ((ctx.code.data[rel32_offset + 2] & 255) << 16) | ((ctx.code.data[rel32_offset + 3] & 255) << 24);
+      let insn_lo: i32 = (ctx.code_data[rel32_offset] & 255) | ((ctx.code_data[rel32_offset + 1] & 255) << 8);
+      let insn_hi: i32 = ((ctx.code_data[rel32_offset + 2] & 255) << 16) | ((ctx.code_data[rel32_offset + 3] & 255) << 24);
       let insn: i32 = insn_lo | insn_hi;
       let imm: i32 = delta / 4;
       if (imm_bits == 26) {
@@ -211,14 +211,14 @@ function elf_resolve_patches(ctx: *ElfCodegenCtx): i32 {
           insn = (insn & 4278190175) | ((imm & 524287) << 5);
         }
       }
-      ctx.code.data[rel32_offset] = elf_to_u8(insn);
-      ctx.code.data[rel32_offset + 1] = elf_to_u8(insn >> 8);
-      ctx.code.data[rel32_offset + 2] = elf_to_u8(insn >> 16);
-      ctx.code.data[rel32_offset + 3] = elf_to_u8(insn >> 24);
+      ctx.code_data[rel32_offset] = elf_to_u8(insn);
+      ctx.code_data[rel32_offset + 1] = elf_to_u8(insn >> 8);
+      ctx.code_data[rel32_offset + 2] = elf_to_u8(insn >> 16);
+      ctx.code_data[rel32_offset + 3] = elf_to_u8(insn >> 24);
     } else if (ctx.e_machine == 243) {
       let imm_bits: i32 = ctx.patches[p].patch_imm_bits;
-      let insn_lo: i32 = (ctx.code.data[rel32_offset] & 255) | ((ctx.code.data[rel32_offset + 1] & 255) << 8);
-      let insn_hi: i32 = ((ctx.code.data[rel32_offset + 2] & 255) << 16) | ((ctx.code.data[rel32_offset + 3] & 255) << 24);
+      let insn_lo: i32 = (ctx.code_data[rel32_offset] & 255) | ((ctx.code_data[rel32_offset + 1] & 255) << 8);
+      let insn_hi: i32 = ((ctx.code_data[rel32_offset + 2] & 255) << 16) | ((ctx.code_data[rel32_offset + 3] & 255) << 24);
       let insn: i32 = insn_lo | insn_hi;
       let val: i32 = delta >> 1;
       if (imm_bits == 13) {
@@ -232,15 +232,15 @@ function elf_resolve_patches(ctx: *ElfCodegenCtx): i32 {
           insn = (insn & 4095) | ((j_imm & 524288) << 11) | ((j_imm & 1023) << 21) | ((j_imm & 1024) << 8) | ((j_imm & 522240) << 1);
         }
       }
-      ctx.code.data[rel32_offset] = elf_to_u8(insn);
-      ctx.code.data[rel32_offset + 1] = elf_to_u8(insn >> 8);
-      ctx.code.data[rel32_offset + 2] = elf_to_u8(insn >> 16);
-      ctx.code.data[rel32_offset + 3] = elf_to_u8(insn >> 24);
+      ctx.code_data[rel32_offset] = elf_to_u8(insn);
+      ctx.code_data[rel32_offset + 1] = elf_to_u8(insn >> 8);
+      ctx.code_data[rel32_offset + 2] = elf_to_u8(insn >> 16);
+      ctx.code_data[rel32_offset + 3] = elf_to_u8(insn >> 24);
     } else {
-      ctx.code.data[rel32_offset] = elf_to_u8(delta);
-      ctx.code.data[rel32_offset + 1] = elf_to_u8(delta >> 8);
-      ctx.code.data[rel32_offset + 2] = elf_to_u8(delta >> 16);
-      ctx.code.data[rel32_offset + 3] = elf_to_u8(delta >> 24);
+      ctx.code_data[rel32_offset] = elf_to_u8(delta);
+      ctx.code_data[rel32_offset + 1] = elf_to_u8(delta >> 8);
+      ctx.code_data[rel32_offset + 2] = elf_to_u8(delta >> 16);
+      ctx.code_data[rel32_offset + 3] = elf_to_u8(delta >> 24);
     }
     p = p + 1;
   }
@@ -250,7 +250,7 @@ function elf_resolve_patches(ctx: *ElfCodegenCtx): i32 {
 /** 向 out 追加 ptr[0..n-1]，返回 0 成功，-1 缓冲区满。 */
 function elf_append(out: *CodegenOutBuf, ptr: *u8, n: i32): i32 {
   let i: i32 = 0;
-  while (i < n && out.len < 262144) {
+  while (i < n && out.len < 1048576) {
     out.data[out.len] = ptr[i];
     out.len = out.len + 1;
     i = i + 1;
@@ -263,7 +263,7 @@ function elf_append(out: *CodegenOutBuf, ptr: *u8, n: i32): i32 {
 
 /** 将 ELF64 可重定位 .o 写入 out；调用前需已执行 elf_resolve_patches。返回写入字节数，失败返回 -1。 */
 function write_elf_o_to_buf(ctx: *ElfCodegenCtx, out: *CodegenOutBuf): i32 {
-  let code_len: i32 = ctx.code.len;
+  let code_len: i32 = ctx.code_len;
   let strtab_start: i32 = 1;
   let strtab_off: i32 = 1;
   let s: i32 = 0;
@@ -305,7 +305,7 @@ function write_elf_o_to_buf(ctx: *ElfCodegenCtx, out: *CodegenOutBuf): i32 {
   if (elf_append(out, ehdr, 64) != 0) {
     return -1;
   }
-  if (elf_append(out, ctx.code.data, code_len) != 0) {
+  if (elf_append(out, &ctx.code_data[0], code_len) != 0) {
     return -1;
   }
   let zero_byte: [1]u8 = [];

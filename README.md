@@ -12,11 +12,11 @@
 
 | 场景 | 命令 | 说明 |
 |------|------|------|
-| **首次 / 从零构建** | `make -C compiler build-tool` | 一条命令：先产出 **shu**（依赖），再产出 **build_tool**。等价目标 `first-time`。 |
+| **首次 / 从零构建** | `make -C compiler build-tool` | 一条命令：先产出 **shu-c**（C 前端，与生成 lsp_gen / build_gen 同源），再产出 **build_tool**。等价目标 `first-time`（不依赖已链 driver 的完整 shu，避免生成规则环）。 |
 | **日常与自举** | `cd compiler && ./build_tool ./shu` | 用 build_tool 重新产出 shu，不依赖 Makefile。 |
 | **验收** | `./tests/run-all.sh` | 在仓库根执行；全过即自举验证等价通过。 |
 
-- 仅需 shu 跑测试时可直接 `make -C compiler`；首次建议 `make -C compiler build-tool` 以便日后用 `./build_tool ./shu`。CI 与本地回归均可用 `make -C compiler test` 或 `./tests/run-all.sh`。
+- 仅需 shu 跑测试时可直接 `make -C compiler`（默认产出 **shu** 与 **shu-c**）；首次建议 `make -C compiler build-tool` 以便日后用 `./build_tool ./shu`。CI 与本地回归均可用 `make -C compiler test` 或 `./tests/run-all.sh`。
 - 详见 `analysis/完全脱离C与Makefile路线图.md` 阶段 5；无 C/无 Makefile 时用 build.su 作唯一入口见 `analysis/完全自举-无C无Makefile.md`。
 
 ---

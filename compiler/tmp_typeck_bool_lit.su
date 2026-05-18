@@ -1,0 +1,4 @@
+// 最小用例：bool 字面量 return（对照 enum 比较）
+function g(): bool {
+  return true;
+}

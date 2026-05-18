@@ -394,15 +394,47 @@ function emit_lea_rbp_to_rax(out: *CodegenOutBuf, offset: i32): i32 {
   return append_asm_line(out, buf, 18 + n);
 }
 
+/** leaq (%rax,%rbx), %rax（缩放 ×1，u8 数组索引）。等价 leaq (,1)；GAS 可写单字节比例 1。 */
+function emit_rax_plus_rbx_scale1(out: *CodegenOutBuf): i32 {
+  let line: [48]u8 = [108, 101, 97, 113, 32, 40, 37, 114, 97, 120, 44, 37, 114, 98, 120, 44, 49, 41, 44, 32, 37, 114, 97, 120, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+  return append_asm_line(out, line, 24);
+}
+
 /** rax = rax + rbx*4（下标乘元素大小 4，用于 i32 数组下标）。GAS: leaq (%rax,%rbx,4), %rax。 */
 function emit_rax_plus_rbx_scale4(out: *CodegenOutBuf): i32 {
   let line: [48]u8 = [108, 101, 97, 113, 32, 40, 37, 114, 97, 120, 44, 37, 114, 98, 120, 44, 52, 41, 44, 32, 37, 114, 97, 120, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
   return append_asm_line(out, line, 24);
 }
 
+/** leaq (%rax,%rbx,8), %rax — 缩放 ×8（指针/宽整型）。 */
+function emit_rax_plus_rbx_scale8(out: *CodegenOutBuf): i32 {
+  let line: [48]u8 = [108, 101, 97, 113, 32, 40, 37, 114, 97, 120, 44, 37, 114, 98, 120, 44, 56, 41, 44, 32, 37, 114, 97, 120, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+  return append_asm_line(out, line, 24);
+}
+
+/** INDEX 赋值：将 al/eax/rax 存到 (%rbx)。 */
+function emit_store_rax_to_rbx_indirect(out: *CodegenOutBuf, elem_sz: i32): i32 {
+  if (elem_sz == 1) {
+    let ln: [32]u8 = [109, 111, 118, 98, 32, 37, 97, 108, 44, 32, 40, 37, 114, 98, 120, 41, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    return append_asm_line(out, ln, 16);
+  }
+  if (elem_sz == 4) {
+    let ln: [32]u8 = [109, 111, 118, 108, 32, 37, 101, 97, 120, 44, 32, 40, 37, 114, 98, 120, 41, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    return append_asm_line(out, ln, 17);
+  }
+  let ln: [32]u8 = [109, 111, 118, 113, 32, 37, 114, 97, 120, 44, 32, 40, 37, 114, 98, 120, 41, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+  return append_asm_line(out, ln, 17);
+}
+
 /** 从 [rax] 加载 4 字节到 %eax（零扩展为 64 位）。用于 EXPR_INDEX 读元素。GAS: movl (%rax), %eax。 */
 function emit_load_32_from_rax(out: *CodegenOutBuf): i32 {
   let line: [32]u8 = [109, 111, 118, 108, 32, 40, 37, 114, 97, 120, 41, 44, 32, 37, 101, 97, 120, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+  return append_asm_line(out, line, 17);
+}
+
+/** INDEX 读到 u8：movzbl (%rax),%eax。 */
+function emit_load_zext8_from_rax(out: *CodegenOutBuf): i32 {
+  let line: [40]u8 = [109, 111, 118, 122, 98, 108, 32, 40, 37, 114, 97, 120, 41, 44, 32, 37, 101, 97, 120, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
   return append_asm_line(out, line, 17);
 }
 
@@ -490,17 +522,17 @@ function emit_jmp(out: *CodegenOutBuf, label: [64]u8, label_len: i32): i32 {
 /** 标签：name:（函数入口或分支目标）；name 与 AST 名或 backend 标签 buf 一致为 [64]u8。 */
 function emit_label(out: *CodegenOutBuf, name: [64]u8, name_len: i32): i32 {
   let i: i32 = 0;
-  while (i < name_len && out.len < 262144) {
+  while (i < name_len && out.len < 1048576) {
     out.data[out.len] = name[i];
     out.len = out.len + 1;
     i = i + 1;
   }
-  if (out.len < 262144) {
+  if (out.len < 1048576) {
     let colon: [1]u8 = [58];
     out.data[out.len] = colon[0];
     out.len = out.len + 1;
   }
-  if (out.len < 262144) {
+  if (out.len < 1048576) {
     let nl: [1]u8 = [10];
     out.data[out.len] = nl[0];
     out.len = out.len + 1;

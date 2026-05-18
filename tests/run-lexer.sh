@@ -10,7 +10,12 @@ if [ -n "$SHU" ]; then
   # test_c 传 SHU=./compiler/shu-c 时用其跑负例；test_su 传 SHU=./compiler/shu 时用 shu_su
   LEXER_SHU="$SHU"
   out=$(mktemp)
-  "$LEXER_SHU" tests/lexer/invalid_char.su -o /tmp/shu_lexer_fail 2>/dev/null && { echo "lexer: expected compile failure for invalid char"; exit 1; }
+  # bootstrap-driver-seed / stage 的 shu 走 .su 单文件 -o 时可能不跑完整 C 前端，lexer 负例会误成功；有 shu-c 时非法字符负例仍用 shu-c，与 Makefile test_c 一致。
+  NEG_SHU="$SHU"
+  if [ -x ./compiler/shu-c ] && [ "${SHU##*/}" != "shu-c" ]; then
+    NEG_SHU=./compiler/shu-c
+  fi
+  "$NEG_SHU" tests/lexer/invalid_char.su -o /tmp/shu_lexer_fail 2>/dev/null && { echo "lexer: expected compile failure for invalid char"; exit 1; }
   rm -f "$out"
 else
   make -C compiler shu-c 2>/dev/null || true

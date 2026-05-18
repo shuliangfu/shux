@@ -28,16 +28,16 @@ function emit_globl(out: *CodegenOutBuf, name: [64]u8, name_len: i32): i32 {
 /** 标签 name:；name 与 backend 标签 buf 一致为 [64]u8。 */
 function emit_label(out: *CodegenOutBuf, name: [64]u8, name_len: i32): i32 {
   let i: i32 = 0;
-  while (i < name_len && out.len < 262144) {
+  while (i < name_len && out.len < 1048576) {
     out.data[out.len] = name[i];
     out.len = out.len + 1;
     i = i + 1;
   }
-  if (out.len < 262144) {
+  if (out.len < 1048576) {
     out.data[out.len] = 58;
     out.len = out.len + 1;
   }
-  if (out.len < 262144) {
+  if (out.len < 1048576) {
     out.data[out.len] = 10;
     out.len = out.len + 1;
     return 0;
@@ -365,16 +365,48 @@ function emit_mov_rbx_to_rax(out: *CodegenOutBuf): i32 {
   return append_asm_line(out, line, 10);
 }
 
+/** x0 + w1 ×1（u8[] 等）；add x0, x0, w1, uxtw（无移位）。 */
+function emit_rax_plus_rbx_scale1(out: *CodegenOutBuf): i32 {
+  let line: [32]u8 = [97, 100, 100, 32, 120, 48, 44, 32, 120, 48, 44, 32, 119, 49, 44, 32, 117, 120, 116, 119, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+  return append_asm_line(out, line, 20);
+}
+
 /** x0 = x0 + w1*4（与 x86 leaq (%rax,%rbx,4), %rax 对等）。用于 EXPR_INDEX 下标乘元素大小 4。add x0, x0, w1, uxtw #2。 */
 function emit_rax_plus_rbx_scale4(out: *CodegenOutBuf): i32 {
   let line: [32]u8 = [97, 100, 100, 32, 120, 48, 44, 32, 120, 48, 44, 32, 119, 49, 44, 32, 117, 120, 116, 119, 32, 35, 50, 0, 0, 0, 0, 0, 0, 0, 0, 0];
   return append_asm_line(out, line, 23);
 }
 
+/** x0 = x0 + w1×8（64 位元素）；add x0, x0, w1, uxtw #3。 */
+function emit_rax_plus_rbx_scale8(out: *CodegenOutBuf): i32 {
+  let line: [32]u8 = [97, 100, 100, 32, 120, 48, 44, 32, 120, 48, 44, 32, 119, 49, 44, 32, 117, 120, 116, 119, 32, 35, 51, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+  return append_asm_line(out, line, 23);
+}
+
+/** 将 w0/x0 存入 [x1]（偏移 0）；INDEX 赋值左值末尾 store。elem_sz：1=strb / 4=str / 默认 8=str。 */
+function emit_store_rax_to_rbx_indirect(out: *CodegenOutBuf, elem_sz: i32): i32 {
+  if (elem_sz == 1) {
+    let ln: [28]u8 = [115, 116, 114, 98, 32, 119, 48, 44, 32, 91, 120, 49, 93, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    return append_asm_line(out, ln, 13);
+  }
+  if (elem_sz == 4) {
+    let ln: [28]u8 = [115, 116, 114, 32, 119, 48, 44, 32, 91, 120, 49, 93, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    return append_asm_line(out, ln, 12);
+  }
+  let ln: [28]u8 = [115, 116, 114, 32, 120, 48, 44, 32, 91, 120, 49, 93, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+  return append_asm_line(out, ln, 12);
+}
+
 /** 从 [x0] 加载 4 字节到 w0（与 x86 movl (%rax), %eax 对等）。用于 EXPR_INDEX 读元素。ldr w0, [x0]。 */
 function emit_load_32_from_rax(out: *CodegenOutBuf): i32 {
   let line: [20]u8 = [108, 100, 114, 32, 119, 48, 44, 32, 91, 120, 48, 93, 0, 0, 0, 0, 0, 0, 0, 0];
   return append_asm_line(out, line, 12);
+}
+
+/** INDEX 读到 u8：ldrb w0, [x0]。 */
+function emit_load_zext8_from_rax(out: *CodegenOutBuf): i32 {
+  let line: [22]u8 = [108, 100, 114, 98, 32, 119, 48, 44, 32, 91, 120, 48, 93, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+  return append_asm_line(out, line, 13);
 }
 
 /** x0 += 立即数（64 位地址）。用于 EXPR_FIELD_ACCESS 基址 + 字段偏移。imm==0 时不发射（优化）。add x0, x0, #imm。 */

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 全量回归：仅用 C 版编译器（shu-c）跑所有 run-*.sh，验证 C 构建的 shu 行为。
 # 在仓库根目录执行：./tests/run-all-c.sh
-# 依赖：make -C compiler 已产出 compiler/shu；本脚本会构建 compiler/shu-c 并以其运行 run-all.sh。
+# 依赖：make -C compiler 已产出 compiler/shu 与 shu-c（make all 已默认含 shu-c）；本脚本确保 shu-c / build_tool 存在并以 shu-c 跑 run-all.sh。
 
 set -e
 cd "$(dirname "$0")/.."

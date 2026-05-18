@@ -1,18 +1,48 @@
 #!/usr/bin/env bash
 # 阶段 3 类型检查测试：正例含 typeck OK；负例（边界）须报 typeck error 且退出码非 0
 # 当 SHU 已设置（test_su/run-all-su）时仅用 compiler/shu（shu_su），不构建 shu-c，并跳过依赖「typeck OK」输出的正例。
+#
+# shu_su 默认须加 -su 才走 .su 流水线；当前仅 return_implicit 在 .su typeck 与 C 对齐，故对 shu_su 仅对该文件自动加 -su。
+# 若将来 .su typeck 覆盖全部负例，可设 TYPECK_SU=all 使所有负例均带 -su（未覆盖前部分用例可能误通过）。
 
 set -e
 cd "$(dirname "$0")/.."
 expect_typeck_error() {
   local file="$1" msg="$2"
   local shu="${3:-./compiler/shu}"
-  err=$("$shu" "$file" -o /tmp/shu_typeck_fail 2>&1) || true
+  local use_su=0
+  if [ "${TYPECK_SU:-}" = "all" ]; then
+    use_su=1
+  elif [ "${shu##*/}" = "shu_su" ] && [ "$file" = "tests/typeck/return_implicit.su" ]; then
+    use_su=1
+  fi
+  local err
+  if [ "$use_su" = 1 ]; then
+    err=$("$shu" -su "$file" -o /tmp/shu_typeck_fail 2>&1) || true
+  else
+    err=$("$shu" "$file" -o /tmp/shu_typeck_fail 2>&1) || true
+  fi
   echo "$err" | grep -q "typeck error" || { echo "expected typeck error in $file (e.g. $msg), got: $err"; exit 1; }
 }
 if [ -n "$SHU" ]; then
   # test_c 传 SHU=./compiler/shu-c 时用其跑负例以得 typeck error；test_su 不传 SHU 时用 compiler/shu
   TYPECK_SHU="$SHU"
+  # check-7.2 的 shu_stage1/2/shu-su：带 -o 的 typeck 负例在部分 .su 单文件路径与 C typeck 未完全对齐时使用 shu-c 跑负例，避免误 PASS。
+  case "${SHU##*/}" in
+    shu_stage1|shu_stage2|shu-su|shu_su)
+      if [ -x ./compiler/shu-c ]; then TYPECK_SHU=./compiler/shu-c; fi
+      ;;
+  esac
+  # SU 宿主（shu_su / shu-su）：赋值 for-step 负例须在本地 -su 流水线上报与 shu-c 同源的行（grep 短语）；其余负例仍由 TYPECK_SHU 兜底
+  case "${SHU##*/}" in
+    shu_su|shu-su)
+      err_assign_su=$("$SHU" -su tests/typeck/type_mismatch_assign.su 2>&1) || true
+      echo "$err_assign_su" | grep -q "assignment type mismatch: expected i32, found bool" || {
+        echo "expected SU 'assignment type mismatch: expected i32, found bool' in type_mismatch_assign.su; got: $err_assign_su"
+        exit 1
+      }
+      ;;
+  esac
   expect_typeck_error tests/typeck/type_mismatch_assign.su "assignment type mismatch" "$TYPECK_SHU"
   expect_typeck_error tests/typeck/if_condition_not_bool.su "if condition must be bool" "$TYPECK_SHU"
   expect_typeck_error tests/typeck/undefined_name.su "undefined name" "$TYPECK_SHU"

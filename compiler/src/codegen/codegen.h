@@ -40,12 +40,14 @@ int codegen_module_to_c(struct ASTModule *m, FILE *out, struct ASTModule **dep_m
  * 将库模块（无 main 或仅 import）生成 C 写入 out；若 is_*_used 非 NULL 则仅生成被引用部分（阶段 8.1 DCE）。
  * lib_dep_mods / lib_dep_paths / n_lib_dep 为该库模块的 import 依赖，用于生成跨模块调用时的 C 前缀（传递依赖）。
  * emitted_type_names/n_emitted_inout/max_emitted 非 NULL 时用于单文件去重。
+ * emit_entry_path：单文件 -E-extern 时传入入口 .su 路径（如 src/lsp/lsp_io.su），用于内嵌原 lsp_*_extern.h 等价块；其它情况传 NULL。
  */
 int codegen_library_module_to_c(struct ASTModule *m, const char *import_path,
     struct ASTModule **lib_dep_mods, const char **lib_dep_paths, int n_lib_dep,
     FILE *out,
     codegen_is_func_used_fn is_func_used, codegen_is_mono_used_fn is_mono_used, codegen_is_type_used_fn is_type_used, void *dce_ctx,
-    char (*emitted_type_names)[CODEGEN_EMITTED_TYPE_NAME_MAX], int *n_emitted_inout, int max_emitted);
+    char (*emitted_type_names)[CODEGEN_EMITTED_TYPE_NAME_MAX], int *n_emitted_inout, int max_emitted,
+    const char *emit_entry_path);
 
 /**
  * 阶段 8.1 DCE：从 main 起算可达性，填充 used_funcs 与 used_mono。used_funcs 与 used_mono 由调用方分配。

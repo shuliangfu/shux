@@ -258,16 +258,48 @@ function enc_lea_rbp_to_rax(ctx: *ElfCodegenCtx, offset: i32): i32 {
   return platform.elf.append_elf_bytes(ctx, buf, 7);
 }
 
+/** leaq (%rax,%rbx,1), %rax — 元素宽 1 字节时下标缩放。魔数取自 x86 ISA（REX.W + modrm）。 */
+function enc_rax_plus_rbx_scale1(ctx: *ElfCodegenCtx): i32 {
+  let buf: [4]u8 = [72, 141, 4, 24];
+  return platform.elf.append_elf_bytes(ctx, buf, 4);
+}
+
 /** leaq (%rax,%rbx,4), %rax。下标乘 4（i32 元素）。 */
 function enc_rax_plus_rbx_scale4(ctx: *ElfCodegenCtx): i32 {
   let buf: [4]u8 = [72, 141, 4, 152];
   return platform.elf.append_elf_bytes(ctx, buf, 4);
 }
 
+/** leaq (%rax,%rbx,8), %rax。下标乘 8（指针/宽整型数组）。 */
+function enc_rax_plus_rbx_scale8(ctx: *ElfCodegenCtx): i32 {
+  let buf: [4]u8 = [72, 141, 4, 216];
+  return platform.elf.append_elf_bytes(ctx, buf, 4);
+}
+
+/** 将 al/eax/rax 存到 (%rbx)：movb/%eax/%rax。elem_sz ∈ {1,4,8}。 */
+function enc_store_rax_to_rbx_indirect(ctx: *ElfCodegenCtx, elem_sz: i32): i32 {
+  if (elem_sz == 1) {
+    let buf: [2]u8 = [136, 3];
+    return platform.elf.append_elf_bytes(ctx, buf, 2);
+  }
+  if (elem_sz == 4) {
+    let buf: [2]u8 = [137, 3];
+    return platform.elf.append_elf_bytes(ctx, buf, 2);
+  }
+  let buf: [3]u8 = [72, 137, 3];
+  return platform.elf.append_elf_bytes(ctx, buf, 3);
+}
+
 /** movl (%rax), %eax。从 [rax] 加载 4 字节到 eax。 */
 function enc_load_32_from_rax(ctx: *ElfCodegenCtx): i32 {
   let buf: [2]u8 = [139, 0];
   return platform.elf.append_elf_bytes(ctx, buf, 2);
+}
+
+/** movzbl (%rax), %eax — 字节零扩展到 eax（与 w32 赋值约定一致）。 */
+function enc_load_zext8_from_rax(ctx: *ElfCodegenCtx): i32 {
+  let buf: [3]u8 = [15, 182, 0];
+  return platform.elf.append_elf_bytes(ctx, buf, 3);
 }
 
 /** addq $imm32, %rax。用于 EXPR_FIELD_ACCESS 字段偏移。imm==0 时不编码（与文本 asm 优化一致）。 */
@@ -312,7 +344,7 @@ function enc_mov_rbx_to_rax(ctx: *ElfCodegenCtx): i32 {
 function enc_jz(ctx: *ElfCodegenCtx, label: [64]u8, label_len: i32): i32 {
   let buf: [6]u8 = [15, 132, 0, 0, 0, 0];
   if (platform.elf.append_elf_bytes(ctx, buf, 6) != 0) { return -1; }
-  let rel32_at: i32 = ctx.code.len - 4;
+  let rel32_at: i32 = ctx.code_len - 4;
   return elf_add_patch(ctx, rel32_at, label, label_len);
 }
 
@@ -320,7 +352,7 @@ function enc_jz(ctx: *ElfCodegenCtx, label: [64]u8, label_len: i32): i32 {
 function enc_jnz(ctx: *ElfCodegenCtx, label: [64]u8, label_len: i32): i32 {
   let buf: [6]u8 = [15, 133, 0, 0, 0, 0];
   if (platform.elf.append_elf_bytes(ctx, buf, 6) != 0) { return -1; }
-  let rel32_at: i32 = ctx.code.len - 4;
+  let rel32_at: i32 = ctx.code_len - 4;
   return elf_add_patch(ctx, rel32_at, label, label_len);
 }
 
@@ -328,7 +360,7 @@ function enc_jnz(ctx: *ElfCodegenCtx, label: [64]u8, label_len: i32): i32 {
 function enc_jmp(ctx: *ElfCodegenCtx, label: [64]u8, label_len: i32): i32 {
   if (enc_u8(ctx, 233) != 0) { return -1; }
   if (enc_u32_le(ctx, 0) != 0) { return -1; }
-  let rel32_at: i32 = ctx.code.len - 4;
+  let rel32_at: i32 = ctx.code_len - 4;
   return elf_add_patch(ctx, rel32_at, label, label_len);
 }
 
@@ -345,7 +377,7 @@ function enc_mov_rax_to_arg_reg(ctx: *ElfCodegenCtx, k: i32): i32 {
 function enc_call(ctx: *ElfCodegenCtx, name: [64]u8, name_len: i32): i32 {
   if (enc_u8(ctx, 232) != 0) { return -1; }
   if (enc_u32_le(ctx, 0) != 0) { return -1; }
-  let rel32_at: i32 = ctx.code.len - 4;
+  let rel32_at: i32 = ctx.code_len - 4;
   return elf_add_reloc(ctx, rel32_at, name, name_len);
 }
 
@@ -353,7 +385,7 @@ function enc_call(ctx: *ElfCodegenCtx, name: [64]u8, name_len: i32): i32 {
 function enc_label(ctx: *ElfCodegenCtx, name: [64]u8, name_len: i32, is_func: i32): i32 {
   if (elf_add_label(ctx, name, name_len) != 0) { return -1; }
   if (is_func != 0) {
-    return elf_add_sym(ctx, name, name_len, ctx.code.len);
+    return elf_add_sym(ctx, name, name_len, ctx.code_len);
   }
   return 0;
 }

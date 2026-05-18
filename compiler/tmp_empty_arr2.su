@@ -1,0 +1,3 @@
+function x(): void {
+    let empty_name: [64]u8 = [];
+}

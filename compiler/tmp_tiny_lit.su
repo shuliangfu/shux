@@ -1,0 +1,8 @@
+struct Tiny {
+  a: i32;
+}
+
+function main(): i32 {
+  let t: Tiny = Tiny { a: 1 };
+  return t.a;
+}

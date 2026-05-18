@@ -1,0 +1,7 @@
+struct Inner {
+    z: i32;
+}
+
+function foo(xs: [2]Inner): Inner {
+    return xs[(1 as isize)];
+}

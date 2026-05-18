@@ -1,0 +1,11 @@
+struct Inner {
+    z: i32;
+}
+
+struct Hold {
+    xs: [2]Inner;
+}
+
+function foo(h: Hold): i32 {
+    return h.xs[1].z;
+}

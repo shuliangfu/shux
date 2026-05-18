@@ -20,7 +20,7 @@ function enc_u32_le(ctx: *ElfCodegenCtx, val: i32): i32 {
 function enc_label(ctx: *ElfCodegenCtx, name: [64]u8, name_len: i32, is_func: i32): i32 {
   if (platform.elf.elf_add_label(ctx, name, name_len) != 0) { return -1; }
   if (is_func != 0) {
-    return platform.elf.elf_add_sym(ctx, name, name_len, ctx.code.len);
+    return platform.elf.elf_add_sym(ctx, name, name_len, ctx.code_len);
   }
   return 0;
 }
@@ -260,15 +260,44 @@ function enc_lea_rbp_to_rax(ctx: *ElfCodegenCtx, offset: i32): i32 {
   return enc_u32_le(ctx, 19 | (10 << 7) | (0 << 12) | (8 << 15) | (imm12 << 20));
 }
 
-/** slli a1, a1, 2; add a0, a0, a1。 */
+/** a0 += a1（缩放 ×1，无移位）。 */
+function enc_rax_plus_rbx_scale1(ctx: *ElfCodegenCtx): i32 {
+  return enc_u32_le(ctx, 51 | (10 << 7) | (0 << 12) | (10 << 15) | (11 << 20));
+}
+
+/** slli a1, a1, 2; add a0, a0, a1 — 缩放 ×4。 */
 function enc_rax_plus_rbx_scale4(ctx: *ElfCodegenCtx): i32 {
   if (enc_u32_le(ctx, 19 | (11 << 7) | (1 << 12) | (11 << 15) | (2 << 20)) != 0) { return -1; }
   return enc_u32_le(ctx, 51 | (10 << 7) | (0 << 12) | (10 << 15) | (11 << 20));
 }
 
+/** slli a1, a1, 3; add a0, a0, a1 — 缩放 ×8。 */
+function enc_rax_plus_rbx_scale8(ctx: *ElfCodegenCtx): i32 {
+  if (enc_u32_le(ctx, 19 | (11 << 7) | (1 << 12) | (11 << 15) | (3 << 20)) != 0) { return -1; }
+  return enc_u32_le(ctx, 51 | (10 << 7) | (0 << 12) | (10 << 15) | (11 << 20));
+}
+
+/** sb/sw/sd：将 a0 写入 0(a1)。elem_sz 1/4/8。 */
+function enc_store_rax_to_rbx_indirect(ctx: *ElfCodegenCtx, elem_sz: i32): i32 {
+  let imm_lo: i32 = 0;
+  let imm_hi: i32 = 0;
+  if (elem_sz == 1) {
+    return enc_u32_le(ctx, 35 | (imm_lo << 7) | (0 << 12) | (11 << 15) | (10 << 20) | (imm_hi << 25));
+  }
+  if (elem_sz == 4) {
+    return enc_u32_le(ctx, 35 | (imm_lo << 7) | (2 << 12) | (11 << 15) | (10 << 20) | (imm_hi << 25));
+  }
+  return enc_u32_le(ctx, 35 | (imm_lo << 7) | (3 << 12) | (11 << 15) | (10 << 20) | (imm_hi << 25));
+}
+
 /** lw a0, 0(a0)。 */
 function enc_load_32_from_rax(ctx: *ElfCodegenCtx): i32 {
   return enc_u32_le(ctx, 3 | (10 << 7) | (2 << 12) | (10 << 15) | (0 << 20));
+}
+
+/** lbu a0, 0(a0) — INDEX 读到 u8。 */
+function enc_load_zext8_from_rax(ctx: *ElfCodegenCtx): i32 {
+  return enc_u32_le(ctx, 3 | (10 << 7) | (4 << 12) | (10 << 15) | (0 << 20));
 }
 
 /** addi a0, a0, imm。imm==0 不发射。 */
@@ -302,21 +331,21 @@ function enc_mov_rbx_to_rax(ctx: *ElfCodegenCtx): i32 {
 /** beqz a0, label。B-type 占位 0，patch 13 位。 */
 function enc_jz(ctx: *ElfCodegenCtx, label: [64]u8, label_len: i32): i32 {
   if (enc_u32_le(ctx, 99 | (0 << 12) | (10 << 15) | (0 << 20)) != 0) { return -1; }
-  let at: i32 = ctx.code.len - 4;
+  let at: i32 = ctx.code_len - 4;
   return platform.elf.elf_add_patch_with_bits(ctx, at, label, label_len, 13);
 }
 
 /** bnez a0, label。B-type 13 位 patch。 */
 function enc_jnz(ctx: *ElfCodegenCtx, label: [64]u8, label_len: i32): i32 {
   if (enc_u32_le(ctx, 99 | (1 << 12) | (10 << 15) | (0 << 20)) != 0) { return -1; }
-  let at: i32 = ctx.code.len - 4;
+  let at: i32 = ctx.code_len - 4;
   return platform.elf.elf_add_patch_with_bits(ctx, at, label, label_len, 13);
 }
 
 /** j label。jal x0, 0；J-type 21 位 patch。 */
 function enc_jmp(ctx: *ElfCodegenCtx, label: [64]u8, label_len: i32): i32 {
   if (enc_u32_le(ctx, 111 | (0 << 7)) != 0) { return -1; }
-  let at: i32 = ctx.code.len - 4;
+  let at: i32 = ctx.code_len - 4;
   return platform.elf.elf_add_patch_with_bits(ctx, at, label, label_len, 21);
 }
 
@@ -330,10 +359,9 @@ function enc_mov_rax_to_arg_reg(ctx: *ElfCodegenCtx, k: i32): i32 {
   return enc_u32_le(ctx, 19 | (rd << 7) | (0 << 12) | (10 << 15) | (0 << 20));
 }
 
-/** jal ra, name。JAL 占位，21 位 patch + reloc。 */
+/** jal ra, name。JAL 占位，仅 reloc（不写 patch）；外部符号无同 .o label，patch 会在 elf_resolve_patches 失败，与 x86_64_enc.enc_call 一致。 */
 function enc_call(ctx: *ElfCodegenCtx, name: [64]u8, name_len: i32): i32 {
   if (enc_u32_le(ctx, 111 | (1 << 7)) != 0) { return -1; }
-  let at: i32 = ctx.code.len - 4;
-  if (platform.elf.elf_add_patch_with_bits(ctx, at, name, name_len, 21) != 0) { return -1; }
+  let at: i32 = ctx.code_len - 4;
   return platform.elf.elf_add_reloc(ctx, at, name, name_len);
 }

@@ -95,6 +95,8 @@ enum TokenKind {
     TOKEN_PIPEPIPE,
     TOKEN_BANG,
     TOKEN_QUESTION,
+    /** as 类型转换 expr as type（与 token.h / lexer.c 一致） */
+    TOKEN_AS,
 }
 
 // 单个 Token：类型 + 源码位置 + 字面量/标识符（.su 无 union，用独立字段）；allow(padding) 与 C 端布局兼容
@@ -108,7 +110,11 @@ allow(padding) struct Token {
     ident_len: i32;
 }
 
-// 是否为 EOF，供后续 lexer 使用
+/**
+ * 是否为 EOF。
+ * Parser 将此比较落成 EXPR_FIELD_ACCESS(t.kind) == EXPR_ENUM_VARIANT(TOKEN_EOF)，typeck/codegen 与 C 流水线一致。
+ * 注意：不得写成 let x: i32 = t.kind as i32（shu-c 在 let 初始化里不支持「as」cast，会破坏 bootstrap-pipeline）。
+ */
 function token_is_eof(t: Token): bool {
     return t.kind == TokenKind.TOKEN_EOF;
 }

@@ -239,6 +239,8 @@ asm 后端已经实现「AST → 汇编 / .o」，**不经过 C 或 LLVM**。但
 
 ### Goal 2 实现计划（用 asm 后端构建 shu，脱离 cc）
 
+**验收命令、Target B（partial / hybrid / strict）与 `SHU_ASM_LINK_TOPOLOGY` 以 [docs/SELFHOST.md](../../docs/SELFHOST.md) 为准**（避免与 `scripts/build_shu_asm.sh` 行为漂移）。
+
 1. **准备宿主 shu**：`make bootstrap-driver` 已可产出带 `-backend asm` 的 shu。pipeline_gen.c 由 `-E` 生成，胶水由 runtime.c 在生成时追加到 stdout，无 Makefile/脚本补丁，问题已从根源修。
 2. **用 asm 产出编译器 .o**：`scripts/build_shu_asm.sh` 按依赖顺序对 token、ast、codegen、typeck、lexer、preprocess、std.fs、asm 子树、parser、pipeline、main 执行 `shu -backend asm -o build_asm/xxx.o xxx.su`；若全部成功则链接 `runtime_asm_build.o + runtime_driver.o + build_asm/*.o` 得到 shu_asm。
 3. **最小 C 桩**：已提供 `src/asm/runtime_asm_build.c`，仅含 `main()` 转调 `entry(argc, argv)`。`make bootstrap-asm` 会生成 `runtime_asm_build.o` 与依赖的 `runtime_driver.o`；完整 asm 自举：`make bootstrap-asm-full`（内部调 build_shu_asm.sh）。

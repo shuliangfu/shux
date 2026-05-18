@@ -12,7 +12,9 @@ struct Lexer {
 }
 
 /** 一次 lexer_next 的返回：更新后的 Lexer 状态与本次读到的 Token。
- * token_start：当前 token 在 source 中的起始位置（skip 空白后），供 parser 复制形参名等；非 ident 时置 0。 */
+ * token_start：当前 token 在 source 中的字节起点（跳过空白后的首字节偏移），供 parser 复制 IDENT/关键字字面量；
+ * 与 lexer_next_body_into 一致（IDENT 与 TOKEN_INT 等带文本的 token 均填真实起点，偏移 0 合法）。
+ * 单字符标点等多数字面量仍为 0。 */
 struct LexerResult {
   next_lex: Lexer;
   tok: Token;
@@ -588,6 +590,18 @@ function try_keyword(data: []u8, start: usize, len: usize, line0: i32, col0: i32
     }
     return t;
   }
+  if (len == 2 && match_keyword(data, start, 2, [97, 115])) {
+    let t: Token = Token {
+      kind: TokenKind.TOKEN_AS,
+      line: line0,
+      col: col0,
+      int_val: 0,
+      float_val: 0.0,
+      ident: 0,
+      ident_len: 0
+    }
+    return t;
+  }
   let t: Token = Token {
     kind: TokenKind.TOKEN_IDENT,
     line: line0,
@@ -668,6 +682,14 @@ function try_keyword_buf(data: *u8, data_len: i32, start: usize, len: usize, lin
   }
   if (len == 5 && match_keyword_buf(data, data_len, start, 5, [117, 115, 105, 122, 101])) {
     let t: Token = Token { kind: TokenKind.TOKEN_USIZE, line: line0, col: col0, int_val: 0, float_val: 0.0, ident: 0, ident_len: 0 }
+    return t;
+  }
+  if (len == 5 && match_keyword_buf(data, data_len, start, 5, [105, 115, 105, 122, 101])) {
+    let t: Token = Token { kind: TokenKind.TOKEN_ISIZE, line: line0, col: col0, int_val: 0, float_val: 0.0, ident: 0, ident_len: 0 }
+    return t;
+  }
+  if (len == 2 && match_keyword_buf(data, data_len, start, 2, [97, 115])) {
+    let t: Token = Token { kind: TokenKind.TOKEN_AS, line: line0, col: col0, int_val: 0, float_val: 0.0, ident: 0, ident_len: 0 }
     return t;
   }
   if (len == 6 && match_keyword_buf(data, data_len, start, 6, [105, 109, 112, 111, 114, 116])) {
@@ -1075,19 +1097,31 @@ function lexer_next_into(out: *LexerResult, lex: Lexer, data: []u8): void {
   lexer_next_impl(out, lex, data);
 }
 
-/** 与 lexer_next 等价，接受 (data: *u8, len) 供无 slice 的 buf 路径使用。单一 return + if-else 链使两分支均为 LexerResult。 */
+/**
+ * glue：pipeline_glue.c 提供 lexer_parser_slice_from_buf；（data,len）与 []u8 视图一致，
+ * 供 buf 路径会合到 lexer_next_into；避免 lexer_next_buf 按值 LexerResult 在 AArch64/Mac 宿主 ABI 损坏。
+ */
+extern function lexer_parser_slice_from_buf(data: *u8, len: i32): []u8;
+
+/** buf + len：写入 out；内部走 lexer_next_into，不得依赖 lexer_next_buf 的返回值。 */
+function lexer_next_buf_into(out: *LexerResult, lex: Lexer, data: *u8, len: i32): void {
+  let source: []u8 = lexer_parser_slice_from_buf(data, len);
+  lexer_next_into(out, lex, source);
+}
+
+/** 与 lexer_next 等价，接受 (data: *u8, len) 供无 slice 的 buf 路径使用；早退 + 单独 return，避免 if 表达式作返回值触发 typecheck 不稳定。 */
 function lexer_next_buf(lex: Lexer, data: *u8, len: i32): LexerResult {
   let l: Lexer = skip_whitespace_and_comments_buf(lex, data, len);
   let len_u: usize = len as usize;
-  return (if (l.pos >= len_u) {
-    let t: Token = Token { kind: TokenKind.TOKEN_EOF, line: l.line, col: l.col, int_val: 0, float_val: 0.0, ident: 0, ident_len: 0 }
-    LexerResult { next_lex: l, tok: t, token_start: (0 as usize) }
-  } else if (data[l.pos] == 0) {
-    let t: Token = Token { kind: TokenKind.TOKEN_EOF, line: l.line, col: l.col, int_val: 0, float_val: 0.0, ident: 0, ident_len: 0 }
-    LexerResult { next_lex: l, tok: t, token_start: (0 as usize) }
-  } else {
-    lexer_next_body_buf(l, data, len)
-  });
+  if (l.pos >= len_u) {
+    let t: Token = Token { kind: TokenKind.TOKEN_EOF, line: l.line, col: l.col, int_val: 0, float_val: 0.0, ident: 0, ident_len: 0 };
+    return LexerResult { next_lex: l, tok: t, token_start: (0 as usize) };
+  }
+  if (data[l.pos] == 0) {
+    let t2: Token = Token { kind: TokenKind.TOKEN_EOF, line: l.line, col: l.col, int_val: 0, float_val: 0.0, ident: 0, ident_len: 0 };
+    return LexerResult { next_lex: l, tok: t2, token_start: (0 as usize) };
+  }
+  return lexer_next_body_buf(l, data, len);
 }
 
 /** 在已保证 l.pos < data.length 且 data[l.pos] != 0 时取下一 Token；供 lexer_next 在 EOF 检查后调用。 */
@@ -1103,9 +1137,11 @@ function lexer_next_body(l: Lexer, data: []u8): LexerResult {
     }
     let len: usize = l.pos - start;
     let tok: Token = try_keyword(data, start, len, line0, col0);
-    return LexerResult { next_lex: l, tok: tok, token_start: (0 as usize) }
+    /** IDENT/关键字：必须与 lexer_next_body_into 一致写入起点，否则会触发 parser 误判与 struct 字段名不匹配。 */
+    return LexerResult { next_lex: l, tok: tok, token_start: start }
   }
   if (is_digit(c)) {
+    let start: usize = l.pos;
     let line0: i32 = l.line;
     let col0: i32 = l.col;
     let ival: i32 = 0;
@@ -1163,7 +1199,7 @@ function lexer_next_body(l: Lexer, data: []u8): LexerResult {
       return LexerResult { next_lex: l, tok: tok, token_start: (0 as usize) }
     }
     let tok: Token = Token { kind: TokenKind.TOKEN_INT, line: line0, col: col0, int_val: ival, float_val: 0.0, ident: 0, ident_len: 0 }
-    return LexerResult { next_lex: l, tok: tok, token_start: (0 as usize) }
+    return LexerResult { next_lex: l, tok: tok, token_start: start }
   }
   if (c == 46 && l.pos + 1 < data.length && is_digit(data[l.pos + 1])) {
     let line0: i32 = l.line;
@@ -1297,9 +1333,11 @@ function lexer_next_body_buf(l: Lexer, data: *u8, len: i32): LexerResult {
     }
     let seg_len: usize = l.pos - start;
     let tok: Token = try_keyword_buf(data, len, start, seg_len, line0, col0);
-    return LexerResult { next_lex: l, tok: tok, token_start: (0 as usize) }
+    /** buf 路径 IDENT/关键字起点，与 lexer_next_body/token_start 语义一致（勿恒为 0）。 */
+    return LexerResult { next_lex: l, tok: tok, token_start: start }
   }
   if (is_digit(c)) {
+    let start: usize = l.pos;
     let line0: i32 = l.line;
     let col0: i32 = l.col;
     let ival: i32 = 0;
@@ -1324,7 +1362,7 @@ function lexer_next_body_buf(l: Lexer, data: *u8, len: i32): LexerResult {
       return LexerResult { next_lex: l, tok: tok, token_start: (0 as usize) }
     }
     let tok: Token = Token { kind: TokenKind.TOKEN_INT, line: line0, col: col0, int_val: ival, float_val: 0.0, ident: 0, ident_len: 0 };
-    return LexerResult { next_lex: l, tok: tok, token_start: (0 as usize) }
+    return LexerResult { next_lex: l, tok: tok, token_start: start }
   }
   if (c == 46 && l.pos + 1 < len_u && is_digit(data[l.pos + 1])) {
     let line0: i32 = l.line;

@@ -10,6 +10,7 @@
 
 - **推荐（分轨全量）**：`./tests/run-all-c.sh`（全量用 C 版编译器 shu-c）、`./tests/run-all-su.sh`（全量用 .su 流水线编译器 shu_su）。CI 两条都跑，见 `.github/workflows/ci.yml`。
 - **通用脚本**：`./tests/run-all.sh` 跑全部 run-*.sh；通过环境变量 `SHU=compiler/shu-c` 或 `SHU=compiler/shu_su` 指定用哪支编译器，不设则用当前 `compiler/shu`。
+- **从零与 build_tool**：`make -C compiler build-tool` / `first-time` 仅用 **shu-c** 对 `../build.su` 做 `-E`（与 `lsp_*_gen` 同源，避免 Makefile 规则环）；仓库根 `./build.sh` 与 Makefile 一致（`-E` + `cc`，勿用 `shu ../build.su -o build_tool`）。`make -C compiler all` 默认同时产出 **shu** 与 **shu-c**。
 - 编译器目录：`make -C compiler test` 与上述等价（内部调 run-all）。
 
 **不纳入回归的脚本**：`run-size-baseline.sh`、`run-perf-baseline.sh` 为可选体积/性能基线，需时单独执行。
@@ -116,7 +117,7 @@ make test
 | **编译器链路** | lexer → parser → preprocess → typeck → codegen → cc 全链路有正例；parser/typeck/lexer 有负例或边界用例（见 README-boundary.md）。 |
 | **语言特性** | 泛型、trait、多文件、import、let/const、if/ternary/while/for、match、enum、struct、slice、数组、指针、向量、defer、goto、panic、return 表达式、二元/一元运算、浮点、布尔 均有对应 run-*.sh。 |
 | **core 模块** | types（core-types）、slice、option、result、builtin、debug、fmt 有独立或 stdlib-import 覆盖；core.mem 通过 std.mem 或 stdlib-import 间接使用。 |
-| **std 模块** | io、io.driver、io.core（经 driver/mem 传递依赖）、mem、net、fs、path、map、string、vec、heap、process、error、runtime 均有 run-*.sh；net 含 connect/listen/accept、accept_many/connect_many 及 udp_recv_many_buf/udp_send_many_buf；fs 含 fs_readv_buf/fs_writev_buf；io.driver 含 submit_*_batch_buf、register_fixed_buffers_buf。 |
+| **std 模块** | io、io.driver、io.core（经 driver/mem 传递依赖）、mem、net、fs、path、map、string、vec、heap、process、error、runtime、time（`run-time.sh`：单调/墙钟/sleep/duration_ns）均有 run-*.sh；net 含 connect/listen/accept、accept_many/connect_many 及 udp_recv_many_buf/udp_send_many_buf；fs 含 fs_readv_buf/fs_writev_buf；io.driver 含 submit_*_batch_buf、register_fixed_buffers_buf。 |
 | **边界/负例** | preprocess、parser、lexer、typeck、struct、float、while、for、let-const、import、match、array、slice、generic、trait、ub、panic 已补边界或负例（见 README-boundary.md）。 |
 | **自举相关** | std.io.driver、std.io.core、std.mem、std.net、UB 收窄、ABI 布局 均纳入 run-all.sh。 |
 
@@ -146,8 +147,9 @@ make test
 | 类型 | 脚本 | 说明 |
 |------|------|------|
 | **CI 必跑** | run-all.sh 中除 run-asm、run-without-c 外的全部 run-*.sh | 在 GitHub Actions 多平台（Linux/macOS/Windows/Docker）上执行；失败则 CI 失败（部分脚本在 CI 下失败时由 run() 打印 SKIP 保绿，见 run-all.sh）。 |
-| **CI 不跑 / 可选** | run-asm.sh | 脚本在 CI 下主动 SKIP（`run-asm SKIP (CI: skip -backend asm ...)`），避免长构建与 asm 环境差异。 |
-| **CI 可选（条件 SKIP）** | run-without-c.sh | 需支持 `-backend asm` 的 shu（`make -C compiler bootstrap-driver`）；CI 默认不构建 bootstrap-driver，故通常输出 `run-without-c SKIP (shu does not support -backend asm; ...)`。 |
+| **CI 可选（限时）** | `linux-asm-smoke` job：见 `.github/workflows/ci.yml` — `make bootstrap-driver` + `SHU_CI_FORCE_ASM=1 ./tests/run-asm.sh`（仅 ubuntu-latest）；与主矩阵并行，不影响其它平台。**失败**时表示 Linux 上 asm 烟测退化，需在本地复现。 |
+| **CI 不跑（默认可 SKIP）** | run-asm.sh（主矩阵内） | 各平台 `run-all` 中仍 SKIP（需 `SHU_CI_FORCE_ASM=1`）；与上项专用 job 分工。 |
+| **CI 可选（条件 SKIP）** | run-without-c.sh | 需支持 `-backend asm` 的 shu；CI 默认不构建 `bootstrap-driver` 时通常 SKIP。 |
 
 **本地全量验证（含 asm）**：
 
@@ -155,7 +157,7 @@ make test
 2. 跑全量测试：`./tests/run-all.sh`（此时 run-without-c 会真正执行；run-asm.sh 在非 CI 环境下会执行，不再主动 SKIP）
 3. 若仅验证 asm 后端：`./tests/run-asm.sh`；验证无 C 运行时路径：`./tests/run-without-c.sh`
 
-**决策记录**：CI 不安装 asm 工具链、不强制跑 run-asm/run-without-c；asm 为可选功能，需在本地或专用 runner 上验证。见 `analysis/下一步开发分析.md` 阶段 10.3。
+**决策记录**：主矩阵不因 asm 加长；**Linux asm 烟测**在独立 job `linux-asm-smoke` 中限时执行（见 workflows）。全盘「无 C 运行时」仍以 `run-without-c.sh` 在本地验证为主。参见 `compiler/docs/SELFHOST.md`、`analysis/下一步开发分析.md` 阶段 10.3。
 
 ### 6.2 完全脱离 C 的验证（run-without-c）
 

@@ -11,7 +11,7 @@
 | **preprocess** | 已写全：`unclosed #if`、`#else/#endif/#elseif` 无 `#if`、`#elseif` 在 `#else` 后、重复 `#else`、多 `#endif` 等 7 类，均断言 stderr 含预期错误信息。 |
 | **parser** | 正例 `semicolon_required.su`；负例 `semicolon_missing.su`（缺分号）、`if_missing_paren.su`（if 后缺 `(`）。 |
 | **lexer** | 正例与 expected.txt 比对；负例 `invalid_char.su`（含 `$` 等非法字符，须编译失败）。 |
-| **typeck** | 正例 lexer/main.su；负例 `type_mismatch_assign.su`、`if_condition_not_bool.su`、`undefined_name.su`、`return_implicit.su`、`ternary_condition_not_bool.su`、`ternary_branches_mismatch.su`，均断言 typeck error。 |
+| **typeck** | 正例 lexer/main.su；负例 `type_mismatch_assign.su`、`if_condition_not_bool.su`、`undefined_name.su`、`return_implicit.su`、`ternary_condition_not_bool.su`、`ternary_branches_mismatch.su`，均断言 stderr 含 `typeck error`。`SHU=shu_su` 时脚本仅对 `return_implicit.su` 自动加 `-su`（与 .su typeck 隐式返回检查对齐）；其余负例仍走 shu_su 内嵌的 C 前端。设 `TYPECK_SU=all` 可令所有负例带 `-su`（.su typeck 未全覆盖前慎用）。 |
 | **struct** | 正例 `padding_allow` + 负例 `padding_no_allow.su`（无 allow(padding) 时隐式 padding 报 typeck error）。 |
 | **float** | 正例多文件 + `boundary.su` + 负例 `init_non_zero_int.su`（f32=1 非字面量/0 报 typeck error）。 |
 | **while** | 正例多文件 + 负例 `break_outside.su`（break 不在循环内报 typeck error）。 |

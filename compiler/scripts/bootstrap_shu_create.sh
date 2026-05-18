@@ -12,4 +12,4 @@ if [ ! -x "./shu" ]; then
 fi
 cp ./shu ./bootstrap_shu
 chmod +x ./bootstrap_shu
-echo "bootstrap_shu created (./bootstrap_shu). Use it with: ./build.sh or SHU=./bootstrap_shu ./scripts/build_shu_asm.sh"
+echo "bootstrap_shu created (./bootstrap_shu). Use: ./build.sh (from repo root) or make -C compiler; build_tool: make -C compiler build-tool."

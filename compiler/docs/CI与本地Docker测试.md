@@ -4,10 +4,10 @@
 
 | Job | 环境 | 步骤 |
 |-----|------|------|
-| **linux** | ubuntu-22.04, ubuntu-latest | 装 liburing/zlib/brotli → `make OPT=1 all` → test_c → test_su → bootstrap-verify |
+| **linux** | ubuntu-22.04, ubuntu-latest | 装 liburing/zlib/brotli → `make OPT=1 all`（**shu** + **shu-c**）→ test_c → test_su → bootstrap-verify |
 | **linux-arm64** | ubuntu-24.04-arm | 同上 |
-| **mac** | macos-14, macos-latest | brew brotli → `make OPT=1 all` → test_c → test_su → bootstrap-verify |
-| **windows** | windows-latest + MSYS2 | 装 make/gcc/zlib/brotli 等 → `make OPT=1 all` → test_c → test_su → bootstrap-verify |
+| **mac** | macos-14, macos-latest | brew brotli → `make OPT=1 all`（**shu** + **shu-c**）→ test_c → test_su → bootstrap-verify |
+| **windows** | windows-latest + MSYS2 | 装 make/gcc/zlib/brotli 等 → `make OPT=1 all`（**shu** + **shu-c**）→ test_c → test_su → bootstrap-verify |
 | **docker-distro** | 容器内 | Alpine / Debian 下 **make clean** → all → test_c → test_su → bootstrap-verify |
 | **linux-option-asan** | ubuntu-22.04 | 可选，ASan 构建复现 run-option 崩溃用，不阻塞主流程 |
 

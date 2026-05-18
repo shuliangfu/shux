@@ -2,13 +2,14 @@
 # asm 后端测试：-backend asm 出汇编，检查 .text/main/ret，可选 as+ld 跑出退出码。
 # 在仓库根目录执行：./tests/run-asm.sh
 # 若当前 shu 不支持 -su/-backend asm（无 pipeline），则 SKIP。
+# macOS：`-o <exe>` 自动 ld 依赖 Xcode CLT/SDK（-lSystem）；失败时可只看 .s/.o 校验或安装 CLT（见 compiler/docs/SELFHOST.md §5）。
 
 set -e
 cd "$(dirname "$0")/.."
 
-# CI 下跳过：bootstrap-driver 构建耗时长，且 -backend asm 在 CI 环境可能失败；本地可单独验证
-if [ -n "${GITHUB_ACTIONS:-}" ] || [ -n "${CI:-}" ]; then
-  echo "run-asm SKIP (CI: skip -backend asm to avoid long build/fail; run locally to verify)"
+# CI 下默认跳过；设 SHU_CI_FORCE_ASM=1 时仍执行（可选 job 与本机等价验证）
+if { [ -n "${GITHUB_ACTIONS:-}" ] || [ -n "${CI:-}" ]; } && [ -z "${SHU_CI_FORCE_ASM:-}" ]; then
+  echo "run-asm SKIP (CI: skip -backend asm unless SHU_CI_FORCE_ASM=1; see tests/README §6.1)"
   exit 0
 fi
 
@@ -21,7 +22,7 @@ if [ -x compiler/shu ]; then SHU=./compiler/shu; elif [ -x compiler/shu_su ]; th
 [ -x "$SHU" ] || { echo "compiler/shu not found"; exit 1; }
 
 # 测试用例：main 返回 42；expr 返回 6（2*3）；local 局部 const + VAR（cmp.su 需 C 解析器支持比较，暂不加入）
-ASM_TESTS="tests/asm/main.su tests/asm/expr.su tests/asm/local.su"
+ASM_TESTS="tests/asm/main.su tests/asm/expr.su tests/asm/local.su tests/asm/index_assign.su tests/asm/tiny_ptr.su"
 for F in $ASM_TESTS; do
   [ -f "$F" ] || { echo "run-asm: $F not found"; exit 1; }
 done
@@ -69,10 +70,15 @@ fi
 
 echo "run-asm: asm output OK (.text, main, ret)"
 
-# 7.4 直接出 ELF .o：-o out.o 应生成可重定位 .o，并可选 ld 运行
+# 7.4 直接出 ELF/Mach-O .o：-o out.o 须为可重定位对象文件；若命令成功但魔数/类型不符则失败（禁止把汇编文本当 .o）。
 DIRECT_O=/tmp/shu_asm_direct.o
 DIRECT_BIN=/tmp/shu_asm_direct_bin
 if "$SHU" -backend asm -o "$DIRECT_O" "$MAIN_ASM" 2>/dev/null; then
+  if ! file "$DIRECT_O" | grep -qiE 'ELF[[:space:]]*.*relocatable|Mach-O[[:space:]]*64-bit.*object'; then
+    echo "run-asm: -o out.o succeeded but file(1) is not a relocatable object: $(file -b "$DIRECT_O" 2>/dev/null)"
+    rm -f "$DIRECT_O" "$DIRECT_BIN"
+    exit 1
+  fi
   if file "$DIRECT_O" | grep -q 'ELF.*relocatable'; then
     echo "run-asm: direct -o out.o OK (ELF relocatable)"
     if ld -e _main -o "$DIRECT_BIN" "$DIRECT_O" 2>/dev/null; then
@@ -109,7 +115,7 @@ if "$SHU" -backend asm -o "$ASM_EXE" "$MAIN_ASM" 2>/dev/null; then
 fi
 
 # 多用例：expr.su、local.su 仅校验能成功出汇编且含 .text/main/ret
-for ASM_FILE in tests/asm/expr.su tests/asm/local.su; do
+for ASM_FILE in tests/asm/expr.su tests/asm/local.su tests/asm/tiny_ptr.su; do
   OUT_T=$(mktemp)
   if "$SHU" -backend asm "$ASM_FILE" > "$OUT_T" 2>/dev/null; then
     if grep -q '\.text' "$OUT_T" && grep -q 'main' "$OUT_T" && grep -q 'ret' "$OUT_T"; then
@@ -136,7 +142,7 @@ if as -o "$OUT_O" "$OUT_S" 2>/dev/null; then
   fi
   rm -f "$OUT_O" "$OUT_BIN"
   # expr.su 预期退出码 6（2*3），local.su 预期 3
-  for PAIR in "tests/asm/expr.su:6" "tests/asm/local.su:3"; do
+  for PAIR in "tests/asm/expr.su:6" "tests/asm/local.su:3" "tests/asm/tiny_ptr.su:42"; do
     F="${PAIR%%:*}"; EXPECT="${PAIR##*:}"
     TMP_S=$(mktemp); TMP_O=/tmp/shu_asm_expr.o; TMP_BIN=/tmp/shu_asm_expr_bin
     if "$SHU" -backend asm "$F" > "$TMP_S" 2>/dev/null && as -o "$TMP_O" "$TMP_S" 2>/dev/null && ld -o "$TMP_BIN" "$TMP_O" 2>/dev/null; then
@@ -177,6 +183,17 @@ done
 RISCV_O=/tmp/shu_asm_riscv64.o
 RISCV_BIN=/tmp/shu_asm_riscv64_bin
 if "$SHU" -backend asm -target riscv64 -o "$RISCV_O" "$MAIN_ASM" 2>/dev/null; then
+  # Linux CI / 宿主上应出 ELF relocatable；macOS 等宿主常为 Mach-O 或混用封装，不因格式误杀整条 run-asm。
+  HOSTOS=$(uname -s 2>/dev/null || echo Unknown)
+  if ! file "$RISCV_O" | grep -qiE 'ELF[[:space:]]*.*relocatable'; then
+    if [ "$HOSTOS" != "Linux" ]; then
+      echo "run-asm: riscv64 -o out.o SKIP ELF check on host=$HOSTOS ($(file -b "$RISCV_O" 2>/dev/null))"
+    else
+      echo "run-asm: riscv64 -o out.o succeeded but not ELF relocatable: $(file -b "$RISCV_O" 2>/dev/null)"
+      rm -f "$RISCV_O" "$RISCV_BIN"
+      exit 1
+    fi
+  fi
   if file "$RISCV_O" | grep -q 'ELF.*relocatable'; then
     echo "run-asm: riscv64 direct -o out.o OK (ELF relocatable)"
     for LD_CMD in "riscv64-unknown-elf-ld" "riscv64-linux-gnu-ld" "ld.lld" "ld"; do

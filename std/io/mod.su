@@ -31,6 +31,7 @@ trait Writer {
 // 使用示例：read_with_timeout(ptr, len, 0) 等价于 read_stdin(ptr, len)。
 
 // ——— 标准 handle（0=stdin，1=stdout，2=stderr；≥2 可与 std.fs/std.net fd 统一） ———
+// SU 流水线 return 字面量可由 typeck 隐式升格为 usize（与 std 内 read(数字,…) 的常见写法等价）。
 function handle_stdin(): usize { return 0; }
 function handle_stdout(): usize { return 1; }
 function handle_stderr(): usize { return 2; }
@@ -64,7 +65,7 @@ function write_from(handle: usize, ptr: *u8, len: usize, timeout_ms: u32): i32 {
 
 // ——— 标准流便捷 API（等价于 read(0,...)/write(1,...)/write(2,...)，timeout=0） ———
 function read_stdin(ptr: *u8, len: usize): i32 {
-  return read(0, ptr, len, 0);
+  return read(handle_stdin(), ptr, len, 0);
 }
 
 /** 零拷贝读：读入内部缓冲，返回只读指针；失败返回 0。指针在下次 read_ptr 前有效。 */
@@ -79,29 +80,29 @@ function read_ptr_len(): i32 {
 
 /** 零拷贝读 stdin：读入内部缓冲，返回只读指针；失败返回 0。指针在下次 read_stdin_ptr/read_ptr 前有效；长度用 read_ptr_len()。 */
 function read_stdin_ptr(): *u8 {
-  return read_ptr(0, 0);
+  return read_ptr(handle_stdin(), 0);
 }
 
 function write_stdout(ptr: *u8, len: usize): i32 {
-  return write(1, ptr, len, 0);
+  return write(handle_stdout(), ptr, len, 0);
 }
 
 function write_stderr(ptr: *u8, len: usize): i32 {
-  return write(2, ptr, len, 0);
+  return write(handle_stderr(), ptr, len, 0);
 }
 
 // ——— 带超时的标准流 API ———
 function read_with_timeout(ptr: *u8, len: usize, timeout_ms: u32): i32 {
-  return read(0, ptr, len, timeout_ms);
+  return read(handle_stdin(), ptr, len, timeout_ms);
 }
 
 function write_with_timeout(ptr: *u8, len: usize, timeout_ms: u32): i32 {
-  return write(1, ptr, len, timeout_ms);
+  return write(handle_stdout(), ptr, len, timeout_ms);
 }
 
 // 向 stderr 写入 ptr[0..len]，超时 timeout_ms（0=无超时）。返回写入字节数，-1=错误。
 function write_stderr_with_timeout(ptr: *u8, len: usize, timeout_ms: u32): i32 {
-  return write(2, ptr, len, timeout_ms);
+  return write(handle_stderr(), ptr, len, timeout_ms);
 }
 
 // ——— 批量读写：直接使用 std.io.driver 的 submit_read_batch / submit_write_batch（import std.io.driver 后传 [4]Buffer + n + timeout_ms） ———

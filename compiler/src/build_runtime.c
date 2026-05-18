@@ -1,13 +1,11 @@
 /**
- * build_runtime.c — 阶段 7：build.su 构建工具的 C 运行时
+ * build_runtime.c — build.su（Zig build.zig 类比）的 C 执行后端
  *
- * 职责：提供 main() 按 build.su 的步骤配置执行；build_run_step(step_id, shu_path) 执行单步，
- * build_run_asm_build(shu_path) 执行完全自举 asm 路径；argv[1]=shu 路径，argv[2]=asm 时走 asm 路径。
- * 约定：build_tool 应在 compiler 目录下运行，步骤 0～5 依次为：编 C→.o、生成并修正 pipeline_gen.c、
- * 编 pipeline_su.o、生成 driver_gen.c、编 driver_su.o、链接 shu。
- * 阶段 1（完全脱离C与Makefile路线图）：step 1 不再调 make，由本文件用 shu 生成 pipeline_gen.c 并完成与 Makefile 等价的修正。
- * 阶段 3：step 0 仅编 main/runtime/preprocess/lexer/ast，不编 parser/typeck/codegen；step 6 生成并编 parser_su.o/typeck_su.o/codegen_su.o；
- * step 1 的 C 回退用 -E-extern 生成瘦 pipeline_gen.c；step 5 链入 parser_su.o、typeck_su.o、codegen_su.o。
+ * 职责：提供 main() 按 ../build.su 的 build_get_step_count() 与 build_get_step_at()（见 build_runtime.c 与 build.su）顺序执行；
+ * build_run_step(step_id, shu_path) 跑「默认路径」（.su → *_gen.c → cc）；build_run_asm_build() 调 scripts/build_shu_asm.sh（机器码路径）。
+ * argv[1]=shu 可执行路径，argv[2]=asm 时只做 asm 路径、不跑默认步骤。
+ * 约定：在 compiler 目录运行 build_tool；具体命令字符串集中在本文件，策略与路线图写在 build.su 顶注释。
+ * 长期目标：Makefile 仅兜底；日常以 ./build_tool ./shu 与 ./build_tool ./shu asm 为准（见 build.su「去掉 Makefile 的爬梯」）。
  */
 
 #include <stdint.h>
@@ -100,9 +98,10 @@ static int build_patch_pipeline_gen_c(void) {
 
 /* build_patch_parser_export 已删除：当前 step 6 用 -E-extern 生成 parser_gen.c，已含 parser_* 符号，不再追写 ABI 包装。 */
 
-/* build.su 仅提供配置：步骤顺序由 getter 暴露；-E 生成 C 时符号为 build_<函数名> */
-extern int32_t build_build_get_step_count(void);
-extern int32_t build_build_get_step_at(int32_t i);
+/* build.su 经 shu -E 生成：符号为 build_<name>；若源名已含模块前缀则 codegen 去重（见 codegen_c_prefix_redundant_with_name）。 */
+extern int32_t build_get_step_count(void);
+extern int32_t build_use_asm_only(void);
+extern int32_t build_get_step_at(int32_t);
 
 /**
  * 6.3 极薄原语：将 argv[i] 复制到 buf（NUL 结尾），返回长度；越界或失败返回 -1。
@@ -357,13 +356,30 @@ int build_run_step(int step_id, const char *shu_path) {
 
 /**
  * 完全自举 asm 路径：执行 SHU=<shu_path> ./scripts/build_shu_asm.sh。
- * 返回 0 成功，非 0 为 system() 返回值或失败。供 build_runner.su 的 entry 调用。
+ * 返回 0 成功，非 0 为 system() 的退出状态（非零即失败）。供 main / build_runner 调用。
+ *
+ * 语义与「是否仍 cc -c pipeline_gen」以 compiler/docs/SELFHOST.md 为准（Target B-partial /
+ * B-hybrid、`SHU_ASM_LINK_TOPOLOGY`）。
+ * 拓扑：未导出 `SHU_ASM_LINK_TOPOLOGY` 时，脚本在 Linux 且 `check_asm_o_quality.sh` 认定全部
+ * __text 非空后自动选 `full_asm`；非 Linux 宿主固定等价于 pipeline_su / B-hybrid 路径。
+ * 不在此重复脚本细节，避免与 build_shu_asm.sh 漂移。
  */
 int build_run_asm_build(const char *shu_path) {
   char cmd[4096];
   int n = snprintf(cmd, sizeof(cmd), "SHU=%s ./scripts/build_shu_asm.sh", shu_path ? shu_path : "./shu");
   if (n <= 0 || n >= (int)sizeof(cmd)) return -1;
   return system(cmd);
+}
+
+/** 执行 build.su 配置的 legacy 逐步（生成 *_gen.c 并链接 shu）。返回 0 成功。 */
+static int build_run_legacy_steps(const char *shu_path) {
+  int n = (int)build_get_step_count();
+  for (int i = 0; i < n; i++) {
+    int step_id = (int)build_get_step_at((int32_t)i);
+    if (step_id < 0) return 1;
+    if (build_run_step(step_id, shu_path) != 0) return 1;
+  }
+  return 0;
 }
 
 #ifdef BUILD_TOOL_SU_ENTRY
@@ -385,14 +401,22 @@ int main(int argc, char **argv) {
     memcpy(shu_path, "./shu", 5);
     shu_path[5] = '\0';
   }
+  /* 显式 asm：只跑脚本，失败即退出（不回退）。 */
   if (argc >= 3 && argv[2] && strcmp(argv[2], "asm") == 0)
     return build_run_asm_build(shu_path) != 0 ? 1 : 0;
-  int n = (int)build_build_get_step_count();
-  for (int i = 0; i < n; i++) {
-    int step_id = (int)build_build_get_step_at((int32_t)i);
-    if (step_id < 0) return 1;
-    if (build_run_step(step_id, shu_path) != 0) return 1;
+  /* 显式 legacy：只跑 -E 逐步，忽略 build_use_asm_only。 */
+  if (argc >= 3 && argv[2] && strcmp(argv[2], "legacy") == 0)
+    return build_run_legacy_steps(shu_path) != 0 ? 1 : 0;
+  /* build.su build_use_asm_only()==1：先试 asm（不生成 pipeline_gen/driver_gen）；失败则回退 legacy。 */
+  if (build_use_asm_only() != 0) {
+    int ar = build_run_asm_build(shu_path);
+    if (ar == 0) {
+      (void)system("cp -f shu_asm shu");
+      fprintf(stderr, "build_tool: asm path OK; ./shu updated from shu_asm.\n");
+      return 0;
+    }
+    fprintf(stderr, "build_tool: asm build failed; falling back to legacy C codegen steps.\n");
   }
-  return 0;
+  return build_run_legacy_steps(shu_path) != 0 ? 1 : 0;
 }
 #endif /* !BUILD_TOOL_SU_ENTRY */

@@ -456,10 +456,36 @@ static void emitted_type_add(const char *c_name, char (*emitted_type_names)[CODE
     (*n_emitted_inout)++;
 }
 
+/** 若 name 已以 pre 开头且 pre 为「build_」则返回非 0，用于去重 build_build_*（build.su）；preprocess_* 等须保留双前缀以匹配 shim。 */
+static int codegen_c_prefix_redundant_with_name_c(const char *pre, const char *name) {
+    if (!pre || !pre[0] || !name) return 0;
+    if (strcmp(pre, "build_") != 0) return 0;
+    size_t pl = strlen(pre);
+    return strncmp(name, pre, pl) == 0;
+}
+
+/** 将 import 路径对应的 C 前缀 pre 与函数名 name 拼成符号；仅 build_ 前缀时对已含前缀的 name 去重。 */
+static void codegen_join_import_prefix_func_name(const char *pre, const char *name, char *buf, size_t buf_size) {
+    if (!buf || buf_size == 0) return;
+    if (!name) name = "";
+    if (!pre || !pre[0]) {
+        (void)snprintf(buf, buf_size, "%s", name);
+        return;
+    }
+    if (codegen_c_prefix_redundant_with_name_c(pre, name))
+        (void)snprintf(buf, buf_size, "%s", name);
+    else
+        (void)snprintf(buf, buf_size, "%s%s", pre, name);
+}
+
 /** 当 codegen_library_prefix 已设置时，将 name 写成 prefix+name 到 buf；否则只写 name。用于库模块符号不冲突。 */
 static void library_prefixed_name(const char *name, char *buf, size_t size) {
     if (!name) name = "";
     if (!codegen_library_prefix || !*codegen_library_prefix) {
+        (void)snprintf(buf, size, "%s", name);
+        return;
+    }
+    if (codegen_c_prefix_redundant_with_name_c(codegen_library_prefix, name)) {
         (void)snprintf(buf, size, "%s", name);
         return;
     }
@@ -3139,7 +3165,9 @@ static int codegen_expr(const struct ASTExpr *e, FILE *out) {
             if (e->value.method_call.resolved_import_path) {
                 char pre[256];
                 import_path_to_c_prefix(e->value.method_call.resolved_import_path, pre, sizeof(pre));
-                fprintf(out, "%s%s(", pre, impl_func->name ? impl_func->name : "");
+                char mname[256];
+                codegen_join_import_prefix_func_name(pre, impl_func->name ? impl_func->name : "", mname, sizeof(mname));
+                fprintf(out, "%s(", mname);
                 for (int i = 0; i < e->value.method_call.num_args; i++) {
                     if (i) fprintf(out, ", ");
                     if (codegen_emit_one_call_arg(out, e->value.method_call.args[i]) != 0) return -1;
@@ -3297,9 +3325,9 @@ static int codegen_emit_call_import_path_impl(FILE *out, const struct ASTExpr *e
             (void)snprintf(full_name, sizeof(full_name), "%s", f->name ? f->name : "");
     } else {
         if (e->value.call.num_type_args > 0 && e->value.call.type_args)
-            (void)snprintf(full_name, sizeof(full_name), "%s%s", pre, mono_instance_mangled_name(f, e->value.call.type_args, e->value.call.num_type_args));
+            codegen_join_import_prefix_func_name(pre, mono_instance_mangled_name(f, e->value.call.type_args, e->value.call.num_type_args), full_name, sizeof(full_name));
         else
-            (void)snprintf(full_name, sizeof(full_name), "%s%s", pre, f->name ? f->name : "");
+            codegen_join_import_prefix_func_name(pre, f->name ? f->name : "", full_name, sizeof(full_name));
     }
     /* 仅按被调函数形参个数输出实参，避免将类型实参占位当作值实参产出（如 core.types.placeholder() 被错误产出 core_types_placeholder(0,0)） */
     int n_emit = e->value.call.num_args;
@@ -3369,7 +3397,7 @@ static int codegen_emit_call_library_dep_impl(FILE *out, const struct ASTExpr *e
                 char pre[256];
                 import_path_to_c_prefix(dep_path, pre, sizeof(pre));
                 char full_name[256];
-                (void)snprintf(full_name, sizeof(full_name), "%s%s", pre, callee_name);
+                codegen_join_import_prefix_func_name(pre, callee_name, full_name, sizeof(full_name));
                 fprintf(out, "%s(", builtin_intrinsic_name(full_name));
                 /* submit_register_fixed_buffers_buf 首参为 struct *，不转 ptrdiff_t */
                 int need_io_driver_cast = (dep_path && (strcmp(dep_path, "std.io.driver") == 0 || strcmp(dep_path, "std/io/driver") == 0)
@@ -6016,6 +6044,75 @@ int codegen_module_to_c(struct ASTModule *m, FILE *out, struct ASTModule **dep_m
 }
 
 /**
+ * 是否为 lsp_io.su 的 -E-extern 入口路径（生成 lsp_io_gen.c）。
+ */
+static int codegen_emit_path_is_lsp_io_su(const char *p) {
+    return p != NULL && strstr(p, "lsp_io.su") != NULL;
+}
+
+/**
+ * 是否为主 LSP 模块 lsp/lsp.su 的 -E-extern 入口（生成 lsp_gen.c）；排除 lsp_io 等路径误匹配。
+ */
+static int codegen_emit_path_is_lsp_main_su(const char *p) {
+    if (!p) return 0;
+    if (strstr(p, "/lsp/lsp.su") != NULL || strstr(p, "\\lsp\\lsp.su") != NULL) return 1;
+    if (strstr(p, "lsp/lsp.su") != NULL && strstr(p, "lsp_io") == NULL) return 1;
+    return 0;
+}
+
+/**
+ * 内嵌输出：语义等价 src/lsp/lsp_io_extern.h；与编译选项 -Dstd_io_read=io_read -Dstd_io_write=io_write 配套。
+ */
+static void codegen_emit_embedded_lsp_io_extern_block(FILE *out) {
+    fputs(
+        "\n/* embedded: equivalent to former lsp_io_extern.h for -E-extern (lsp_io_gen.c) */\n"
+        "extern int32_t std_io_read(size_t handle, uint8_t *ptr, size_t len, uint32_t timeout_ms);\n"
+        "extern int32_t std_io_write(size_t handle, uint8_t *ptr, size_t len, uint32_t timeout_ms);\n"
+        "extern void lsp_debug_u32(uint32_t n);\n"
+        "#define typeck_lsp_debug_u32 lsp_debug_u32\n"
+        "extern void lsp_debug_ptr(uint8_t *p);\n"
+        "#define typeck_lsp_debug_ptr lsp_debug_ptr\n"
+        "extern uint8_t *typeck_std_heap_alloc(size_t size);\n"
+        "extern void typeck_std_heap_free(uint8_t *ptr);\n"
+        "#define std_heap_alloc typeck_std_heap_alloc\n"
+        "#define std_heap_free typeck_std_heap_free\n",
+        out);
+}
+
+/**
+ * 内嵌输出：语义等价 src/lsp/lsp_gen_extern.h（lsp_io 符号经 typeck_* 与 static inline 包装）。
+ */
+static void codegen_emit_embedded_lsp_gen_extern_block(FILE *out) {
+    fputs(
+        "\n/* embedded: equivalent to former lsp_gen_extern.h for -E-extern (lsp_gen.c) */\n"
+        "extern ptrdiff_t typeck_read_message(int32_t fd, uint8_t *body_out, int32_t body_cap, uint8_t *state_buf);\n"
+        "extern ptrdiff_t typeck_write_fd(int32_t fd, uint8_t *ptr, size_t count);\n"
+        "extern uint8_t *typeck_lsp_alloc(size_t size);\n"
+        "extern void typeck_lsp_free(uint8_t *ptr);\n"
+        "extern int32_t typeck_lsp_is_null(uint8_t *ptr);\n"
+        "extern int32_t typeck_extract_document_text(uint8_t *body, int32_t body_len, uint8_t *out_buf, int32_t out_cap);\n"
+        "static inline ptrdiff_t lsp_io_read_message(int32_t fd, uint8_t *body_out, int32_t body_cap, uint8_t *state_buf) {\n"
+        "  return typeck_read_message(fd, body_out, body_cap, state_buf);\n"
+        "}\n"
+        "static inline ptrdiff_t lsp_io_write_fd(int32_t fd, uint8_t *ptr, size_t count) {\n"
+        "  return typeck_write_fd(fd, ptr, count);\n"
+        "}\n"
+        "static inline uint8_t *lsp_io_lsp_alloc(size_t size) {\n"
+        "  return typeck_lsp_alloc(size);\n"
+        "}\n"
+        "static inline void lsp_io_lsp_free(uint8_t *ptr) {\n"
+        "  typeck_lsp_free(ptr);\n"
+        "}\n"
+        "static inline int32_t lsp_io_lsp_is_null(uint8_t *ptr) {\n"
+        "  return typeck_lsp_is_null(ptr);\n"
+        "}\n"
+        "static inline int32_t lsp_io_extract_document_text(uint8_t *body, int32_t body_len, uint8_t *out_buf, int32_t out_cap) {\n"
+        "  return typeck_extract_document_text(body, body_len, out_buf, out_cap);\n"
+        "}\n",
+        out);
+}
+
+/**
  * 将库模块生成 C（类型与函数带 import 前缀，避免与入口模块符号冲突）；功能见 codegen.h。阶段 8.1 DCE 时仅输出已引用。
  * lib_dep_mods/lib_dep_paths/n_lib_dep 为该库的 import 依赖，用于生成跨模块调用前缀（库内调用其他 import 时）。
  */
@@ -6023,7 +6120,8 @@ int codegen_library_module_to_c(struct ASTModule *m, const char *import_path,
     struct ASTModule **lib_dep_mods, const char **lib_dep_paths, int n_lib_dep,
     FILE *out,
     codegen_is_func_used_fn is_func_used, codegen_is_mono_used_fn is_mono_used, codegen_is_type_used_fn is_type_used, void *dce_ctx,
-    char (*emitted_type_names)[CODEGEN_EMITTED_TYPE_NAME_MAX], int *n_emitted_inout, int max_emitted) {
+    char (*emitted_type_names)[CODEGEN_EMITTED_TYPE_NAME_MAX], int *n_emitted_inout, int max_emitted,
+    const char *emit_entry_path) {
     if (!m || !out) return -1;
     static char lib_prefix_buf[256];
     size_t off = 0;
@@ -6044,6 +6142,14 @@ int codegen_library_module_to_c(struct ASTModule *m, const char *import_path,
     codegen_n_emitted_inout = n_emitted_inout;
     codegen_max_emitted = max_emitted;
     codegen_slice_emitted_n = 0;
+
+    /* 单文件 -E-extern：原依赖 -include lsp_io_extern.h / lsp_gen_extern.h，改由生成 C 内嵌等价块（见 docs/完全去掉C与H-前置清单.md §1） */
+    if (emitted_type_names && emit_entry_path) {
+        if (codegen_emit_path_is_lsp_io_su(emit_entry_path))
+            codegen_emit_embedded_lsp_io_extern_block(out);
+        else if (codegen_emit_path_is_lsp_main_su(emit_entry_path))
+            codegen_emit_embedded_lsp_gen_extern_block(out);
+    }
 
     /* 单文件模式时 include 与 panic 已由 driver 在写库前统一输出，此处不再输出；仅多文件（无 emitted_type_names）时每个库自己输出 include */
     if (!emitted_type_names) {

@@ -23,6 +23,8 @@ extern int codegen_codegen_entry_library_module_to_c(struct ASTModule *m, const 
 #endif
 #include <ctype.h>
 #include <limits.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -39,6 +41,14 @@ static void resolve_import_file_path_multi(const char **lib_roots, int n_lib_roo
 #ifdef SHU_USE_SU_TYPECK
 /* 6.1：.su typeck 入口；由 typeck.su 提供（库模块形式生成，符号为 typeck_typeck_entry），转调 C typeck_module */
 extern int typeck_typeck_entry(struct ASTModule *mod, struct ASTModule **deps, int ndep);
+#endif
+#ifdef SHU_USE_SU_PIPELINE
+/**
+ * pipeline / run_compiler 路径在条目 251x/325x 等处调用，实现位于本文件后部 #if SHU_USE_SU_PIPELINE 静态区；
+ * 此处前置声明以满足 C99「先声明后调用」，避免编译 runtime_su.o / runtime_driver.o 时出现隐式声明与类型冲突。
+ */
+void driver_dep_seed_slots(void *arenas[32], void *modules[32], int32_t n);
+void driver_dep_seeded_clear_all(void);
 #endif
 
 /** 舒 IO 后端 .o 路径（分析/舒IO实现路线图.md 阶段 1）；源码在 std/io/io.c，产出 std/io/io.o（与 shu 所在目录的上一级 std/io/ 下）；C 与 -su 路径均需链入。 */
@@ -848,6 +858,7 @@ struct ast_PipelineDepCtx {
 extern int pipeline_run_su_pipeline(void *module, void *arena, const uint8_t *source_data, size_t source_len, void *out_buf, void *ctx);
 /** 诊断：返回 module 的 num_funcs（pipeline_glue.c 提供，与 ast_Module 同 TU）。 */
 extern int driver_get_module_num_funcs(void *m);
+extern int driver_get_module_main_func_index(void *m);
 
 /** 6.1：填充 ctx 的 entry_dir_buf、lib_root_bufs，供 .su 内 resolve_path_su 使用；loaded/preprocess 为 ctx 内固定数组。 */
 static void pipeline_fill_ctx_path_buffers(struct ast_PipelineDepCtx *ctx, const char *entry_dir, const char **lib_roots, int n_lib_roots) {
@@ -1060,7 +1071,7 @@ static int invoke_ld(const char *o_path, const char *exe_path, const char *targe
 /** 调试：打印 module 中每个 func 的 name_len/name（由 Makefile 追加到 pipeline_gen.c）；便于定位 mai/ba 截断 */
 extern void pipeline_debug_module_funcs(void *module);
 /* 与生成代码中 codegen_CodegenOutBuf 布局一致；C 在调用后将 data[0..len-1] 写到 FILE* */
-#define SU_CODEGEN_OUTBUF_CAP 262144
+#define SU_CODEGEN_OUTBUF_CAP 1048576
 struct codegen_CodegenOutBuf {
     unsigned char data[SU_CODEGEN_OUTBUF_CAP];
     int32_t len;
@@ -1363,8 +1374,11 @@ static void resolve_import_file_path_multi(const char **lib_roots, int n_lib_roo
             if (access(path, R_OK) == 0) return;
         }
     }
+    /* 入口同目录的单段 fallback：须在写 path 后立即 access，否则会带着错误路径去读文件并报 import 打不开。 */
     if (entry_dir && entry_dir[0] && strchr(import_path, '.') == NULL) {
         (void)snprintf(path, path_size, "%s/%.255s.su", entry_dir, import_path);
+        if (access(path, R_OK) == 0)
+            return;
     }
     /* 带点 import（如 arch.x86_64）也应在 dep 所在目录查找：backend.su 在 src/asm/ 导入 arch.x86_64 → src/asm/arch/x86_64.su。
      * 若 import 首段与 entry_dir 末段同名（如 src/asm/ 中 import asm.types），则跳过首段避免重复。 */
@@ -1385,9 +1399,9 @@ static void resolve_import_file_path_multi(const char **lib_roots, int n_lib_roo
         if (off + 5 <= path_size)
             snprintf(path + off, path_size - off, ".su");
         if (access(path, R_OK) == 0) return;
-        /* 也试 /mod.su（兼容未来扩展） */
-        if (off + 9 <= path_size)
-            snprintf(path + (off - 1), path_size - (off - 1), "/mod.su");
+        /* 也试 /mod.su：off 为「.su」起点，须在 dot 处覆写；勿用 path+(off-1) 否则会吞掉末尾段最后一个字符（如 time→tim）。 */
+        if (off + (size_t)8 <= path_size)
+            (void)snprintf(path + off, path_size - off, "/mod.su");
         if (access(path, R_OK) == 0) return;
     }
 }
@@ -1406,7 +1420,6 @@ static int find_loaded_index(const char *import_path, char **all_paths, int n_al
     return -1;
 }
 
-#if !defined(SHU_USE_SU_DRIVER)
 /**
  * 从入口文件路径推导 -E 时库模块的 C 前缀（用于 codegen_library_module_to_c）。
  * 例如 src/pipeline/pipeline.su -> "pipeline"，src/typeck/typeck.su -> "typeck"。
@@ -1555,7 +1568,6 @@ static int resolve_and_load_imports(ASTModule *mod, const char **lib_roots, int 
     *n_all_out = n_all;
     return 0;
 }
-#endif /* !SHU_USE_SU_DRIVER */
 
 /**
  * 将 Token 类型枚举转为可读字符串，用于控制台打印。
@@ -1658,6 +1670,7 @@ static const char *token_kind_str(TokenKind k) {
         case TOKEN_PIPEPIPE: return "PIPEPIPE";
         case TOKEN_BANG:   return "BANG";
         case TOKEN_QUESTION: return "QUESTION";
+        case TOKEN_AS:     return "AS";
         case TOKEN_ASSIGN: return "ASSIGN";
         default:            return "?";
     }
@@ -2486,6 +2499,11 @@ int RUN_CC_FUNC(int argc, char **argv) {
             pctx.target_arch = 1;
         if (target && strstr(target, "riscv64") != NULL)
             pctx.target_arch = 2;
+#if defined(__APPLE__) && defined(__aarch64__)
+        /* 未传 -target 时 Mach-O 须与宿主一致，避免 x86_64 对象与 arm64 runtime 混链。 */
+        if (!target)
+            pctx.target_arch = 1;
+#endif
         pctx.use_macho_o = 0;
         pctx.use_coff_o = 0;
 #if defined(__APPLE__)
@@ -2501,15 +2519,39 @@ int RUN_CC_FUNC(int argc, char **argv) {
             typeck_dep_arena_ptrs[i] = dep_arenas[i];
         }
         pipeline_set_dep_slots(dep_arenas, dep_modules);
-        /* 入口在 pipeline 内用 .su 重新解析以保持 Module 布局一致。 */
-        memset(arena, 0, arena_sz);
-        memset(module, 0, module_sz);
+        driver_dep_seed_slots(dep_arenas, dep_modules, n_deps);
+        codegen_set_dep_slots_for_su_pipeline((struct ASTModule **)dep_modules, (const char **)dep_paths, n_deps);
+        codegen_set_preamble_has_core_option_result(1);
+        /* asm 产出可重定位 .o 时必须让 pipeline_run_su_pipeline 内完整地 parse_into + typeck + asm codegen，
+         * 避免「仅用上方 parser_parse_into 预解析 + entry_already_parsed=1 跳过 SU 路径」时出现 module/arena
+         * 与 .su ASM 后端不一致（曾表现为 Mach-O __text 段长度为 0 等）。
+         * 预解析仍用于上方收集 import / n_deps；此处重置入口 module/arena 后由 pipeline 重填。 */
+        if (emit_elf_o && use_asm_backend) {
+            memset(arena, 0, arena_sz);
+            memset(module, 0, module_sz);
+            parser_parse_into_init(module, arena);
+            pctx.entry_already_parsed = 0;
+        } else if (driver_get_module_num_funcs(module) > 0) {
+            pctx.entry_already_parsed = 1;
+        } else {
+            memset(arena, 0, arena_sz);
+            memset(module, 0, module_sz);
+            parser_parse_into_init(module, arena);
+            pctx.entry_already_parsed = 0;
+        }
         int ec = pipeline_run_su_pipeline(module, arena, src_slice.data, (size_t)src_slice.length, (void *)&out_buf, (void *)&pctx);
+        if (getenv("SHU_ASM_ENTRY_DEBUG")) {
+            fprintf(stderr, "shu: asm entry dbg ec=%d num_funcs=%d out_asm_len=%zu\n",
+                    ec, driver_get_module_num_funcs(module), (size_t)out_buf.len);
+        }
+        driver_dep_seeded_clear_all();
+        codegen_set_dep_slots_for_su_pipeline(NULL, NULL, 0);
         if (ec == 0 && (out_buf.len > 0 || emit_elf_o)) {
             if (emit_elf_o && elf_ctx_ptr) {
                 int32_t elf_ec = asm_asm_codegen_elf_o(module, arena, (void *)&pctx, (struct platform_elf_ElfCodegenCtx *)elf_ctx_ptr, (void *)&out_buf);
                 if (elf_ec != 0 || out_buf.len <= 0) {
-                    fprintf(stderr, "shu: asm_codegen_elf_o failed (elf_ec=%d, out_len=%zu)\n", (int)elf_ec, (size_t)out_buf.len);
+                    fprintf(stderr, "shu: asm_codegen_elf_o failed (elf_ec=%d, out_len=%zu, num_funcs=%d)\n",
+                            (int)elf_ec, (size_t)out_buf.len, driver_get_module_num_funcs(module));
                     if (asm_out) fclose(asm_out);
                     if (elf_ctx_ptr) free(elf_ctx_ptr);
                     for (int j = 0; j < n_deps; j++) { free(dep_arenas[j]); free(dep_modules[j]); }
@@ -2688,7 +2730,7 @@ int RUN_CC_FUNC(int argc, char **argv) {
 #if defined(SHU_USE_SU_CODEGEN) && !defined(SHU_USE_SU_PIPELINE)
                     if (codegen_codegen_entry_library_module_to_c(all_dep_mods[i], all_dep_paths[i], lib_deps, lib_dep_paths, n_lib, stdout, NULL, NULL, NULL, NULL, emitted_type_buf, &n_emitted, max_emitted) != 0) {
 #else
-                    if (codegen_library_module_to_c(all_dep_mods[i], all_dep_paths[i], lib_deps, lib_dep_paths, n_lib, stdout, NULL, NULL, NULL, NULL, emitted_type_buf, &n_emitted, max_emitted) != 0) {
+                    if (codegen_library_module_to_c(all_dep_mods[i], all_dep_paths[i], lib_deps, lib_dep_paths, n_lib, stdout, NULL, NULL, NULL, NULL, emitted_type_buf, &n_emitted, max_emitted, NULL) != 0) {
 #endif
                         ec = -1;
                         break;
@@ -2702,7 +2744,7 @@ int RUN_CC_FUNC(int argc, char **argv) {
 #if defined(SHU_USE_SU_CODEGEN) && !defined(SHU_USE_SU_PIPELINE)
                     ec = codegen_codegen_entry_library_module_to_c(mod, lib_name, dep_mods, (const char **)mod->import_paths, ndep, stdout, NULL, NULL, NULL, NULL, emitted_type_buf, &n_emitted, max_emitted);
 #else
-                    ec = codegen_library_module_to_c(mod, lib_name, dep_mods, (const char **)mod->import_paths, ndep, stdout, NULL, NULL, NULL, NULL, emitted_type_buf, &n_emitted, max_emitted);
+                    ec = codegen_library_module_to_c(mod, lib_name, dep_mods, (const char **)mod->import_paths, ndep, stdout, NULL, NULL, NULL, NULL, emitted_type_buf, &n_emitted, max_emitted, input_path);
 #endif
                 } else if (mod->main_func && mod->main_func->body) {
 #if defined(SHU_USE_SU_CODEGEN) && !defined(SHU_USE_SU_PIPELINE)
@@ -2728,7 +2770,7 @@ int RUN_CC_FUNC(int argc, char **argv) {
 #if defined(SHU_USE_SU_CODEGEN) && !defined(SHU_USE_SU_PIPELINE)
                 ec = codegen_codegen_entry_library_module_to_c(mod, lib_name, NULL, NULL, 0, stdout, NULL, NULL, NULL, NULL, NULL, NULL, 0);
 #else
-                ec = codegen_library_module_to_c(mod, lib_name, NULL, NULL, 0, stdout, NULL, NULL, NULL, NULL, NULL, NULL, 0);
+                ec = codegen_library_module_to_c(mod, lib_name, NULL, NULL, 0, stdout, NULL, NULL, NULL, NULL, NULL, NULL, 0, input_path);
 #endif
             } else {
                 fprintf(stderr, "shu: no main function (cannot emit C)\n");
@@ -2858,7 +2900,7 @@ int RUN_CC_FUNC(int argc, char **argv) {
 #if defined(SHU_USE_SU_CODEGEN) && !defined(SHU_USE_SU_PIPELINE)
                 if (codegen_codegen_entry_library_module_to_c(all_dep_mods[i], all_dep_paths[i], lib_deps, lib_dep_paths, n_lib, cf, dce_is_func_used, dce_is_mono_used, dce_is_type_used, dce_ctx_arg, emitted_type_buf, &n_emitted, max_emitted) != 0) {
 #else
-                if (codegen_library_module_to_c(all_dep_mods[i], all_dep_paths[i], lib_deps, lib_dep_paths, n_lib, cf, dce_is_func_used, dce_is_mono_used, dce_is_type_used, dce_ctx_arg, emitted_type_buf, &n_emitted, max_emitted) != 0) {
+                if (codegen_library_module_to_c(all_dep_mods[i], all_dep_paths[i], lib_deps, lib_dep_paths, n_lib, cf, dce_is_func_used, dce_is_mono_used, dce_is_type_used, dce_ctx_arg, emitted_type_buf, &n_emitted, max_emitted, NULL) != 0) {
 #endif
                     fclose(cf);
                     unlink(tmp);
@@ -3235,7 +3277,7 @@ int run_compiler_su_path(int argc, char **argv) {
     free(module);
     free(src);
     if (ec != 0 || out_buf.len == 0) {
-        fprintf(stderr, "shu: pipeline failed for '%s'\n", input_path);
+        fprintf(stderr, "shu: pipeline failed for '%s' (ec=%d, out_len=%d)\n", input_path, ec, (int)out_buf.len);
         if (!emit_to_stdout) { fclose(cf); unlink(tmp_c); }
         return 1;
     }
@@ -3381,14 +3423,109 @@ void driver_pipeline_fail_code(int rc, const uint8_t *path) {
     }
 }
 
-/** 无 -o 时由 .su 驱动调用，向 stderr 打印 parse OK / typeck OK，供 run-import 等测试 grep。 */
-void driver_print_parse_typeck_ok(void) {
-    fprintf(stderr, "parse OK: main(): i32 { expr }\n");
-    fprintf(stderr, "typeck OK\n");
+/**
+ * .su driver_run_su_emit_su 在无 -o、pipeline/typeck/codegen 全成功结束时调用 stderr 烟测两行。
+ * 首行前缀保留「parse OK:」，次行保留「typeck OK」，grep 仍可匹配 run-import/run-stdlib 脚本；
+ * num_funcs/main_idx/codegen_bytes 避免「实为库模块或未 emit 却仍冒用 main()/expr」的误导。
+ */
+void driver_print_su_smoke_summary(void *module, size_t codegen_len) {
+    int num_funcs = driver_get_module_num_funcs(module);
+    int main_ix = driver_get_module_main_func_index(module);
+    fprintf(stderr, "parse OK: num_funcs=%d main_idx=%d codegen_bytes=%zu\n",
+            num_funcs,
+            main_ix,
+            codegen_len);
+    fflush(stderr);
+    fputs("typeck OK\n", stderr);
+    fflush(stderr);
 }
 
 void driver_diagnostic_parse_fail(int32_t main_idx, int32_t num_funcs, int32_t arena_num_types) {
     fprintf(stderr, "shu: parse fail main_idx=%d num_funcs=%d arena_num_types=%d\n", (int)main_idx, (int)num_funcs, (int)arena_num_types);
+}
+
+/**
+ * .su 流水线中 typeck_su_ast / typeck_su_ast_library 失败时打印一行 stderr。
+ * 与 C 路径 lsp_diag_report_typeck 在 !lsp_diag_enabled 时的前缀一致，供 run-typeck.sh、check-7.2 等识别（.su typeck 当前不向 stderr 逐条报原因）。
+ */
+void driver_diagnostic_typeck_fail(void) {
+    fprintf(stderr, "typeck error: .su pipeline type check failed\n");
+    fflush(stderr);
+}
+
+/**
+ * .su typeck：标注失败函数（下标 + 名称）与失败类别；在 driver_diagnostic_typeck_fail 一行之前打印，便于定位大模块。
+ * kind：5 = check_block 失败；-6 = 非 void 函数块末隐式尾表达式。
+ */
+void driver_diagnostic_typeck_func_fail(int32_t func_idx, const uint8_t *name, int32_t name_len, int32_t kind) {
+    fprintf(stderr, "shu: typeck func_idx=%d ", (int)func_idx);
+    if (name && name_len > 0 && name_len <= 64)
+        (void)fwrite(name, 1, (size_t)name_len, stderr);
+    else
+        (void)fputs("(unknown)", stderr);
+    fprintf(stderr, " (%s)\n", kind == -6 ? "implicit tail return" : "check_block failed");
+    fflush(stderr);
+}
+
+/** 诊断：FIELD_ACCESS 时 base 的类型与 *T 指向名；SHU_TYPECK_PTR=1 时打印（含模块已登记的 struct_layouts 条数）。 */
+void driver_diagnostic_typeck_ptr_field(int32_t bt_kind, int32_t inner_kind, int32_t inner_nlen, int32_t base_resolved_ref,
+                                      int32_t num_struct_layouts) {
+    if (!getenv("SHU_TYPECK_PTR"))
+        return;
+    fprintf(stderr,
+            "shu: [SHU_TYPECK_PTR] FIELD_ACCESS bt_kind=%d inner_kind=%d inner_nlen=%d base_resolved_ref=%d "
+            "num_struct_layouts=%d\n",
+            (int)bt_kind, (int)inner_kind, (int)inner_nlen, (int)base_resolved_ref, (int)num_struct_layouts);
+    fflush(stderr);
+}
+
+/** 诊断：EXPR_RETURN 失败；SHU_TYPECK_RET=1。stage 1=operand check_expr -1；2=got 与期望 return_type_ref 不一致。 */
+void driver_diagnostic_typeck_ret_fail(int32_t stage, int32_t op_expr_ref, int32_t expect_ty_ref, int32_t got_ty_ref) {
+    if (!getenv("SHU_TYPECK_RET"))
+        return;
+    fprintf(stderr, "shu: [RET_FAIL] stage=%d op_expr_ref=%d expect_ty_ref=%d got_ty_ref=%d\n", (int)stage,
+            (int)op_expr_ref, (int)expect_ty_ref, (int)got_ty_ref);
+    fflush(stderr);
+}
+
+/**
+ * .su 流水线 typeck：赋值 / 复合赋值左右类型不符时打印一行 stderr，与 typeck.c 经 lsp_diag_report_typeck 的措辞一致，
+ * 以便 run-typeck、负例与 shu-c 对齐（含 "assignment type mismatch: expected …, found …"）。
+ */
+void driver_diagnostic_typeck_assign_mismatch(int32_t is_compound, int32_t line, int32_t col,
+                                               const uint8_t *expect_buf, int32_t expect_len,
+                                               const uint8_t *found_buf, int32_t found_len) {
+    (void)fputs("typeck error: ", stderr);
+    (void)fputs(is_compound ? "compound assignment type mismatch: expected " : "assignment type mismatch: expected ", stderr);
+    if (expect_buf && expect_len > 0)
+        (void)fwrite(expect_buf, 1, (size_t)expect_len, stderr);
+    else
+        (void)fputc('?', stderr);
+    (void)fputs(", found ", stderr);
+    if (found_buf && found_len > 0)
+        (void)fwrite(found_buf, 1, (size_t)found_len, stderr);
+    else
+        (void)fputc('?', stderr);
+    fprintf(stderr, " at %d:%d\n", (int)line, (int)col);
+    fflush(stderr);
+}
+
+/** 非重入也没关系：赋值诊断双缓冲（.su check_expr_impl 格式化 expected/found 类型名）；单线程流水线专用。 */
+static uint8_t g_type_diag_scratch_expect[96];
+static uint8_t g_type_diag_scratch_found[96];
+
+uint8_t *driver_typeck_diag_scratch_expect(void) { return g_type_diag_scratch_expect; }
+uint8_t *driver_typeck_diag_scratch_found(void) { return g_type_diag_scratch_found; }
+
+/** 诊断：check_block_impl 入口打印块计数；SHU_TYPECK_BLOCK=1（常与 SHU_TYPECK_FN 同用）。 */
+void driver_diagnostic_typeck_block_enter(int32_t func_idx, int32_t block_ref, int32_t n_const, int32_t n_let, int32_t n_loop,
+                                          int32_t n_for, int32_t n_expr, int32_t final_ref) {
+    if (!getenv("SHU_TYPECK_BLOCK"))
+        return;
+    fprintf(stderr,
+            "shu: [SHU_TYPECK_BLOCK] func_idx=%d block_ref=%d const=%d let=%d while=%d for=%d expr_stmt=%d final_expr=%d\n",
+            (int)func_idx, (int)block_ref, (int)n_const, (int)n_let, (int)n_loop, (int)n_for, (int)n_expr, (int)final_ref);
+    fflush(stderr);
 }
 
 /** -su -E 多文件诊断：codegen 前打印 module.num_funcs 与 out_buf.len，便于排查 dep 产出为空。需要时取消注释 fprintf。 */
@@ -3404,12 +3541,14 @@ void driver_diagnostic_entry_already(int32_t v) {
 
 /** 诊断：解析前 source_len。由 pipeline.su 调用。需要时取消注释 fprintf。 */
 void driver_diagnostic_source_len(int32_t len) {
-    (void)len;
+    if (getenv("SHU_DEBUG_PIPE"))
+        fprintf(stderr, "shu: [SHU_DEBUG_PIPE] entry_source_len=%d\n", (int)len);
 }
 
 /** 诊断：entry 解析后 module.num_funcs，便于确认是否未解析（0）。由 pipeline.su 调用。需要时取消注释 fprintf。 */
 void driver_diagnostic_after_entry_parse(int32_t num_funcs) {
-    (void)num_funcs;
+    if (getenv("SHU_DEBUG_PIPE"))
+        fprintf(stderr, "shu: [SHU_DEBUG_PIPE] after_entry_parse num_funcs=%d\n", (int)num_funcs);
 }
 
 /** 每个 dep codegen 后打印 j 与 out_buf.len，确认 buffer 是否递增。需要时取消注释 fprintf。 */
@@ -3473,7 +3612,11 @@ void driver_diagnostic_asm_var_not_found(const uint8_t *name, int32_t len, int32
 
 /** asm 后端：返回 -1 前调用，loc 表示失败位置（1=section_text 2=globl 3=label 4=prologue 5=block_body 6=block_inits 7=emit_expr 8=epilogue），便于定位 rc=-6。 */
 void driver_diagnostic_asm_fail_at(int32_t loc) {
-    fprintf(stderr, "shu: asm codegen fail_at=%d (last_expr_kind=%d)\n", (int)loc, driver_diagnostic_asm_last_expr_kind);
+    if (driver_diagnostic_asm_current_func_len > 0) {
+        fprintf(stderr, "shu: asm codegen func=%.*s ",
+                driver_diagnostic_asm_current_func_len, (const char *)driver_diagnostic_asm_current_func);
+    }
+    fprintf(stderr, "fail_at=%d (last_expr_kind=%d)\n", (int)loc, driver_diagnostic_asm_last_expr_kind);
     fflush(stderr);
 }
 
@@ -3742,6 +3885,49 @@ int driver_run_su_emit_c_set_n_lib_roots(int n) {
     return 0;
 }
 
+/** main.su 在解析到 -E-extern 后置 1；driver_run_su_emit_c 消费后清零。与 C 路径 emit_extern_imports 对齐。 */
+static int driver_su_emit_c_want_extern;
+
+int driver_run_su_emit_c_set_emit_extern(int v) {
+    driver_su_emit_c_want_extern = v ? 1 : 0;
+    return 0;
+}
+
+/** 前置声明：下方 driver_want_asm_emit_to_file 早于本函数定义处调用（6.2 argv 拷贝原语）。 */
+int driver_get_argv_i(int argc, char **argv, int i, char *buf, int max);
+
+/**
+ * argv 中是否出现 `-backend asm`。
+ *
+ * 【历史说明】原名 emit_to_file 曾隐含「必须与 -o 同现」以避免 DriverSuEmitState 栈错位；
+ * `driver_run_asm_backend` 已支持无 \c out_path（汇编文本 stdout）与 ELF \c .o，故凡声明 asm 后端即应转调
+ * `driver_run_compiler_full`。
+ *
+ * 【返回值】1 → main.su 的 run_compiler_su_path_impl 应走 `driver_run_compiler_full`；否则走 `pipeline_run_su_pipeline_impl` 旧路径。
+ */
+int driver_want_asm_emit_to_file(int argc, char **argv) {
+    int want_asm = 0;
+    char cur[512];
+    char nx[512];
+    int i;
+    if (!argv || argc < 2)
+        return 0;
+    /* 与 driver_run_compiler_full 一致：经 main.su 传入的 argv 在 ABI 上与 char** 同址，但若用错位索引会破坏 -L；
+     * 必须用 driver_get_argv_i 逐项拷贝，与同文件 main.su/driver_get_argv_i 语义对齐。 */
+    for (i = 1; i < argc; i++) {
+        if (driver_get_argv_i(argc, argv, i, cur, (int)sizeof cur) < 0)
+            continue;
+        if (strcmp(cur, "-backend") != 0)
+            continue;
+        if (i + 1 >= argc)
+            break;
+        if (driver_get_argv_i(argc, argv, i + 1, nx, (int)sizeof nx) >= 0 && strcmp(nx, "asm") == 0)
+            want_asm = 1;
+        i++; /* -backend 已消费；下一外层循环会跳过 asm 令牌 */
+    }
+    return want_asm ? 1 : 0;
+}
+
 /** 6.2 极薄原语：将 argv[i] 复制到 buf，最多 max-1 字节并加 NUL，返回长度（不含 NUL）；i 越界或失败返回 -1。供 main.su 自实现 argv 解析。 */
 int driver_get_argv_i(int argc, char **argv, int i, char *buf, int max) {
     if (!argv || !buf || max <= 0 || i < 0 || i >= argc || !argv[i]) return -1;
@@ -3845,6 +4031,11 @@ int driver_source_has_generic_syntax(const uint8_t *path, int path_len) {
 }
 
 #if defined(SHU_USE_SU_DRIVER) && defined(SHU_USE_SU_PIPELINE)
+/* preprocess.su → preprocess_gen.c；与 pipeline 内 preprocess_su_buf 同源，仅本 #if 块内 driver_run_compiler_full 入口调用。 */
+extern int32_t typeck_preprocess_su_buf(const uint8_t *source_buf, ptrdiff_t source_len, uint8_t *out_buf, int32_t out_cap);
+/* parser_gen（经 pipeline 链接）：仅用 buf+len，与流水线内入口解析完全一致；先于 pipeline 调 parser_parse_into(slice) 曾与 parse_into_buf 行为分叉并导致流水线内解析空 module。 */
+extern struct parser_ParseIntoResult parser_parse_into_buf(void *arena, void *module, uint8_t *data, int32_t len);
+
 /**
  * 传递加载 dep：从 main 的 import 出发，解析每个 dep 的 import 并加入加载列表，直至无新 dep。
  * 填满 dep_sources/dep_lens/dep_paths，*n_deps 为个数。返回 0 成功，1 失败（调用方负责释放已分配）。
@@ -3932,6 +4123,16 @@ fail_to_load:
 }
 
 #if defined(SHU_USE_SU_DRIVER) && defined(SHU_USE_SU_PIPELINE)
+/**
+ * asm 后端写出 FILE *：若为 stdout（无 \c -o 时打印汇编文本）则不得 \c fclose，仅 \c fflush。
+ */
+static void driver_asm_fclose_asm_out(FILE *fp) {
+    if (!fp || fp == stdout)
+        fflush(stdout);
+    else
+        fclose(fp);
+}
+
 /** -backend asm 时 driver 用：判断 -o 是否写 .o/.obj；与 run_compiler_c 侧逻辑一致。 */
 static int driver_asm_output_is_elf_o(const char *path) {
     if (!path) return 0;
@@ -3948,7 +4149,10 @@ static int driver_asm_output_want_exe(const char *path) {
     if (n >= 2 && path[n - 2] == '.' && path[n - 1] == 's') return 0;
     return 1;
 }
-/** -backend asm -o <exe> 时调 ld；仅 driver 构建需要，与 run_compiler_c 侧 invoke_ld 逻辑一致。 */
+/** -backend asm -o <exe> 时调 ld；仅 driver 构建需要，与 run_compiler_c 侧 invoke_ld 逻辑一致。
+ *  macOS：Mach-O 分支使用 -lSystem；若宿主未装 Xcode CLT/SDK，裸 ld 常报 library 'System' not found，
+ *  此时请以 tests/run-asm.sh 校验 .s/.o，或安装 CLT（见 docs/SELFHOST.md §5）；子进程在 ld 失败后仍会尝试 execlp(clang)。
+ */
 static int driver_asm_invoke_ld(const char *o_path, const char *exe_path, const char *target, int use_macho_o, int use_coff_o, const char *runtime_panic_o, const char *io_o, const char *net_o, const char *thread_o) {
     (void)target;
     (void)use_coff_o;
@@ -4031,18 +4235,33 @@ static int driver_run_asm_backend(const char *input_path, const char *out_path, 
     }
     memset(arena, 0, arena_sz);
     memset(module, 0, module_sz);
-    struct shulang_slice_uint8_t src_slice = { (uint8_t *)src, src_len };
-    parser_parse_into_init(module, arena);
-    struct parser_ParseIntoResult pr = parser_parse_into(arena, module, &src_slice);
-    if (pr.ok != 0) {
-        fprintf(stderr, "shu: -su pipeline failed (parse_into)\n");
-        free(arena);
-        free(module);
-        free(src);
-        return 1;
+    /* 仅收集 import 路径；须在 memset(module) 前拷贝，否则 path 为空。 */
+    int32_t n_imports = 0;
+    char saved_import_paths[32][65];
+    int32_t saved_import_lens[32];
+    {
+        struct shulang_slice_uint8_t src_slice = { (uint8_t *)src, src_len };
+        parser_parse_into_init(module, arena);
+        struct parser_ParseIntoResult pr = parser_parse_into(arena, module, &src_slice);
+        if (pr.ok == 0) {
+            n_imports = parser_get_module_num_imports(module);
+            if (n_imports > 32)
+                n_imports = 32;
+            for (int32_t ii = 0; ii < n_imports; ii++) {
+                uint8_t path_buf[64];
+                parser_get_module_import_path(module, ii, path_buf);
+                size_t k = 0;
+                while (k < sizeof(path_buf) && path_buf[k] && k < 64) {
+                    saved_import_paths[ii][k] = (char)path_buf[k];
+                    k++;
+                }
+                saved_import_paths[ii][k] = '\0';
+                saved_import_lens[ii] = (int32_t)k;
+            }
+        }
+        memset(arena, 0, arena_sz);
+        memset(module, 0, module_sz);
     }
-    parser_parse_into_set_main_index(module, pr.main_idx);
-    int32_t n_imports = parser_get_module_num_imports(module);
     char entry_dir_buf[512];
     get_entry_dir(input_path, entry_dir_buf, sizeof(entry_dir_buf));
     const char *entry_dir = entry_dir_buf;
@@ -4052,15 +4271,15 @@ static int driver_run_asm_backend(const char *input_path, const char *out_path, 
     int n_deps = 0;
     if (n_imports > 0 && n_imports <= 32) {
         for (int i = 0; i < n_imports && n_deps < MAX_ALL_DEPS; i++) {
-            uint8_t path_buf[64];
-            parser_get_module_import_path(module, i, path_buf);
             char path_c[65];
             size_t k = 0;
-            while (k < sizeof(path_buf) && path_buf[k]) {
-                path_c[k] = (char)path_buf[k];
+            while (k < (size_t)saved_import_lens[i] && saved_import_paths[i][k]) {
+                path_c[k] = saved_import_paths[i][k];
                 k++;
             }
             path_c[k] = '\0';
+            if (path_c[0] == '\0')
+                continue;
             if (find_loaded_index(path_c, dep_paths, n_deps) >= 0)
                 continue;
             char resolved[PATH_MAX];
@@ -4129,13 +4348,18 @@ static int driver_run_asm_backend(const char *input_path, const char *out_path, 
         }
         emit_elf_o = 1;
     } else {
-        asm_out = fopen(out_path, "wb");
-        if (!asm_out) {
-            perror("shu: -o (asm)");
-            free(arena);
-            free(module);
-            free(src);
-            return 1;
+        if (!out_path) {
+            /* 与前项一致：-backend asm 无 -o 时向 stdout 发汇编文本，走与本函数相同的 SU pipeline/asm 后端 */
+            asm_out = stdout;
+        } else {
+            asm_out = fopen(out_path, "wb");
+            if (!asm_out) {
+                perror("shu: -o (asm)");
+                free(arena);
+                free(module);
+                free(src);
+                return 1;
+            }
         }
         emit_elf_o = driver_asm_output_is_elf_o(out_path);
     }
@@ -4143,7 +4367,7 @@ static int driver_run_asm_backend(const char *input_path, const char *out_path, 
         elf_ctx_ptr = malloc(pipeline_sizeof_elf_ctx());
         if (!elf_ctx_ptr) {
             fprintf(stderr, "shu: elf_ctx alloc failed\n");
-            fclose(asm_out);
+            driver_asm_fclose_asm_out(asm_out);
             free(arena);
             free(module);
             free(src);
@@ -4161,7 +4385,7 @@ static int driver_run_asm_backend(const char *input_path, const char *out_path, 
         dep_modules[j] = malloc(module_sz);
         if (!dep_arenas[j] || !dep_modules[j]) {
             fprintf(stderr, "shu: -su pipeline: dep alloc failed\n");
-            if (asm_out) fclose(asm_out);
+            driver_asm_fclose_asm_out(asm_out);
             if (elf_ctx_ptr) free(elf_ctx_ptr);
             while (j > 0) { j--; free(dep_arenas[j]); free(dep_modules[j]); }
             while (n_deps--) { free(dep_sources[n_deps]); free(dep_paths[n_deps]); }
@@ -4188,6 +4412,10 @@ static int driver_run_asm_backend(const char *input_path, const char *out_path, 
         pctx.target_arch = 1;
     if (target && strstr(target, "riscv64") != NULL)
         pctx.target_arch = 2;
+#if defined(__APPLE__) && defined(__aarch64__)
+    if (!target)
+        pctx.target_arch = 1;
+#endif
     pctx.use_macho_o = 0;
     pctx.use_coff_o = 0;
 #if defined(__APPLE__)
@@ -4209,7 +4437,7 @@ static int driver_run_asm_backend(const char *input_path, const char *out_path, 
         if (ec != 0) {
             fprintf(stderr, "shu: pipeline failed for import '%s' (rc=%d)\n", dep_paths[j], ec);
             for (int k = 0; k < n_deps; k++) { free(dep_arenas[k]); free(dep_modules[k]); }
-            if (asm_out) fclose(asm_out);
+            driver_asm_fclose_asm_out(asm_out);
             if (elf_ctx_ptr) free(elf_ctx_ptr);
             while (n_deps--) { free(dep_sources[n_deps]); free(dep_paths[n_deps]); }
             free(arena);
@@ -4224,15 +4452,28 @@ static int driver_run_asm_backend(const char *input_path, const char *out_path, 
         typeck_dep_arena_ptrs[j] = dep_arenas[j];
     }
     pipeline_set_dep_slots(dep_arenas, dep_modules);
-    memset(arena, 0, arena_sz);
-    memset(module, 0, module_sz);
-    int ec = pipeline_run_su_pipeline(module, arena, src_slice.data, (size_t)src_slice.length, (void *)&out_buf, (void *)&pctx);
+    driver_dep_seed_slots(dep_arenas, dep_modules, n_deps);
+    codegen_set_dep_slots_for_su_pipeline((struct ASTModule **)dep_modules, (const char **)dep_paths, n_deps);
+    codegen_set_preamble_has_core_option_result(1);
+    pctx.entry_already_parsed = 0;
+    int ec = pipeline_run_su_pipeline(module, arena, (const uint8_t *)src, src_len, (void *)&out_buf, (void *)&pctx);
+    if (getenv("SHU_ASM_DEBUG")) {
+        fprintf(stderr, "shu: asm backend after pipeline: ec=%d num_funcs=%d out_asm_len=%zu\n",
+                ec, driver_get_module_num_funcs(module), (size_t)out_buf.len);
+        pipeline_debug_module_funcs(module);
+    }
+    driver_dep_seeded_clear_all();
+    codegen_set_dep_slots_for_su_pipeline(NULL, NULL, 0);
     if (ec == 0 && (out_buf.len > 0 || emit_elf_o)) {
         if (emit_elf_o && elf_ctx_ptr) {
             int32_t elf_ec = asm_asm_codegen_elf_o(module, arena, (void *)&pctx, (struct platform_elf_ElfCodegenCtx *)elf_ctx_ptr, (void *)&out_buf);
+            if (getenv("SHU_ASM_DEBUG")) {
+                fprintf(stderr, "shu: asm_codegen_elf_o: elf_ec=%d elf_len=%zu\n", (int)elf_ec, (size_t)out_buf.len);
+            }
             if (elf_ec != 0 || out_buf.len <= 0) {
-                fprintf(stderr, "shu: asm_codegen_elf_o failed (elf_ec=%d, out_len=%zu)\n", (int)elf_ec, (size_t)out_buf.len);
-                if (asm_out) fclose(asm_out);
+                fprintf(stderr, "shu: asm_codegen_elf_o failed (elf_ec=%d, out_len=%zu, num_funcs=%d)\n",
+                        (int)elf_ec, (size_t)out_buf.len, driver_get_module_num_funcs(module));
+                driver_asm_fclose_asm_out(asm_out);
                 if (elf_ctx_ptr) free(elf_ctx_ptr);
                 for (j = 0; j < n_deps; j++) { free(dep_arenas[j]); free(dep_modules[j]); }
                 while (n_deps > 0) { n_deps--; free(dep_sources[n_deps]); free(dep_paths[n_deps]); }
@@ -4243,8 +4484,9 @@ static int driver_run_asm_backend(const char *input_path, const char *out_path, 
             }
         }
         fwrite(out_buf.data, 1, (size_t)out_buf.len, asm_out ? asm_out : stdout);
-        if (!asm_out) fflush(stdout);
-        if (asm_out) fclose(asm_out);
+        if (!asm_out)
+            fflush(stdout);
+        driver_asm_fclose_asm_out(asm_out);
         asm_out = NULL;
         if (elf_ctx_ptr) { free(elf_ctx_ptr); elf_ctx_ptr = NULL; }
         for (j = 0; j < n_deps; j++) { free(dep_arenas[j]); free(dep_modules[j]); }
@@ -4269,7 +4511,7 @@ static int driver_run_asm_backend(const char *input_path, const char *out_path, 
             }
         }
     } else {
-        if (asm_out) fclose(asm_out);
+        driver_asm_fclose_asm_out(asm_out);
         if (asm_want_exe && asm_tmp_o_path[0]) unlink(asm_tmp_o_path);
         if (elf_ctx_ptr) free(elf_ctx_ptr);
         for (j = 0; j < n_deps; j++) { free(dep_arenas[j]); free(dep_modules[j]); }
@@ -4305,43 +4547,95 @@ int driver_run_compiler_full(int argc, char **argv) {
     int use_lto = 0;
     int want_asm_backend = 0;
     const char *target = NULL;
-    int i;
-    for (i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "-o") == 0) {
-            if (i + 1 >= argc) return 1;
-            out_path = argv[++i];
-            continue;
-        }
-        if (strcmp(argv[i], "-L") == 0) {
-            if (i + 1 >= argc) return 1;
-            if (n_lib_roots < SU_FULL_MAX_LIB_ROOTS) lib_roots_arr[n_lib_roots++] = argv[++i];
-            continue;
-        }
-        if (strcmp(argv[i], "-O") == 0) {
-            if (i + 1 >= argc) return 1;
-            opt_level = argv[++i];
-            continue;
-        }
-        if (strcmp(argv[i], "-flto") == 0) { use_lto = 1; continue; }
-        if (strcmp(argv[i], "-su") == 0) { continue; }
-        if (strcmp(argv[i], "-backend") == 0) {
-            if (i + 1 >= argc) return 1;
-            if (strcmp(argv[i + 1], "asm") == 0) want_asm_backend = 1;
+    /** argv 必须由 driver_get_argv_i 读取：从 main_run_compiler_c/driver_gen 传来的形参可与 char** 同址，
+     * 直接用 argv[i] strcmp 在多平台上曾导致 -L 丢失， asm 后端 import 退化为 entry_dir/xxx.su。 */
+    char argbuf[512];
+    char nextbuf[512];
+    char drv_full_lib_bufs[SU_FULL_MAX_LIB_ROOTS][512];
+    char drv_full_opt_buf[32];
+    char drv_full_target_buf[512];
+    char drv_full_out_buf[512];
+    char drv_full_input_buf[512];
+    int i = 1;
+    while (i < argc) {
+        if (driver_get_argv_i(argc, argv, i, argbuf, (int)sizeof argbuf) < 0) {
             i++;
             continue;
         }
-        if (strcmp(argv[i], "-target") == 0) {
-            if (i + 1 >= argc) return 1;
-            target = argv[i + 1];
+        if (strcmp(argbuf, "-o") == 0) {
+            i++;
+            if (i >= argc || driver_get_argv_i(argc, argv, i, drv_full_out_buf, (int)sizeof drv_full_out_buf) < 0)
+                return 1;
+            out_path = drv_full_out_buf;
             i++;
             continue;
         }
-        /* 仅将 .su 结尾的参数视为输入文件 */
-        if (argv[i][0] != '-') {
-            size_t len = strlen(argv[i]);
-            if (len >= 3 && argv[i][len-3] == '.' && argv[i][len-2] == 's' && argv[i][len-1] == 'u')
-                input_path = argv[i];
+        if (strcmp(argbuf, "-L") == 0) {
+            i++;
+            if (i >= argc || driver_get_argv_i(argc, argv, i, nextbuf, (int)sizeof nextbuf) < 0)
+                return 1;
+            /* 已满时仍跳过库根字符串，否则后续令牌会被当成顶层参数导致解析错乱 */
+            if (n_lib_roots < SU_FULL_MAX_LIB_ROOTS) {
+                int k = n_lib_roots;
+                size_t ln = strlen(nextbuf);
+                if (ln >= sizeof(drv_full_lib_bufs[k]))
+                    ln = sizeof(drv_full_lib_bufs[k]) - (size_t)1;
+                memcpy(drv_full_lib_bufs[k], nextbuf, ln);
+                drv_full_lib_bufs[k][ln] = '\0';
+                lib_roots_arr[k] = drv_full_lib_bufs[k];
+                n_lib_roots = k + 1;
+            }
+            i++;
+            continue;
         }
+        if (strcmp(argbuf, "-O") == 0) {
+            i++;
+            if (i >= argc || driver_get_argv_i(argc, argv, i, drv_full_opt_buf, (int)sizeof drv_full_opt_buf) < 0)
+                return 1;
+            opt_level = drv_full_opt_buf;
+            i++;
+            continue;
+        }
+        if (strcmp(argbuf, "-flto") == 0) {
+            use_lto = 1;
+            i++;
+            continue;
+        }
+        if (strcmp(argbuf, "-su") == 0) {
+            i++;
+            continue;
+        }
+        if (strcmp(argbuf, "-backend") == 0) {
+            i++;
+            if (i >= argc || driver_get_argv_i(argc, argv, i, nextbuf, (int)sizeof nextbuf) < 0)
+                return 1;
+            if (strcmp(nextbuf, "asm") == 0)
+                want_asm_backend = 1;
+            i++;
+            continue;
+        }
+        if (strcmp(argbuf, "-target") == 0) {
+            i++;
+            if (i >= argc || driver_get_argv_i(argc, argv, i, drv_full_target_buf, (int)sizeof drv_full_target_buf) < 0)
+                return 1;
+            target = drv_full_target_buf;
+            i++;
+            continue;
+        }
+        /* 仅将 .su 结尾的参数视为输入文件（最后一条胜出） */
+        if (argbuf[0] != '-') {
+            size_t len = strlen(argbuf);
+            if (len >= 3 && argbuf[len - 3] == '.' && argbuf[len - 2] == 's' && argbuf[len - 1] == 'u') {
+                if (len >= sizeof(drv_full_input_buf))
+                    len = sizeof(drv_full_input_buf) - (size_t)1;
+                memcpy(drv_full_input_buf, argbuf, len);
+                drv_full_input_buf[len] = '\0';
+                input_path = drv_full_input_buf;
+            }
+            i++;
+            continue;
+        }
+        i++;
     }
     if (!use_lto && getenv("SHULANG_LTO") && strcmp(getenv("SHULANG_LTO"), "1") == 0) use_lto = 1;
     if (n_lib_roots == 0) {
@@ -4352,15 +4646,24 @@ int driver_run_compiler_full(int argc, char **argv) {
     if (!input_path) return 1;
     /* 防御：若 argv 中显式有 -o 与下一参，则强制不向 stdout 打 C（避免 -su file.su -o out 解析顺序导致误打） */
     if (out_path == NULL) {
-        for (int j = 1; j + 1 < argc; j++)
-            if (strcmp(argv[j], "-o") == 0 && argv[j + 1] && argv[j + 1][0] != '-') {
-                out_path = argv[j + 1];
+        for (int j = 1; j + 1 < argc; j++) {
+            if (driver_get_argv_i(argc, argv, j, argbuf, (int)sizeof argbuf) < 0)
+                continue;
+            if (strcmp(argbuf, "-o") != 0)
+                continue;
+            if (driver_get_argv_i(argc, argv, j + 1, drv_full_out_buf, (int)sizeof drv_full_out_buf) >= 0 &&
+                drv_full_out_buf[0] != '-') {
+                out_path = drv_full_out_buf;
                 break;
             }
+        }
     }
 #if defined(SHU_USE_SU_DRIVER) && defined(SHU_USE_SU_PIPELINE)
-    /* -backend asm 时走真正 asm 后端（pipeline + asm_codegen_elf_o），不再生成 C 再 cc，避免 typeck/parser/main 等 SKIP */
-    if (want_asm_backend && out_path)
+    /*
+     * -backend asm：一律走 SU pipeline + asm_asm_codegen_*（有无 -o 均如此）。
+     * 无 \c out_path 时向 stdout 打汇编文本；否则写 \c .o / \c .s / 或可执行路径（参见 driver_run_asm_backend）。
+     */
+    if (want_asm_backend)
         return driver_run_asm_backend(input_path, out_path, lib_roots_arr, n_lib_roots, target, argv);
 #endif
     int emit_to_stdout = (out_path == NULL);
@@ -4489,6 +4792,57 @@ int driver_run_compiler_full(int argc, char **argv) {
             }
         }
     }
+    /*
+     * pipeline 入口用 parse_into_buf 解析源码；其子模块 import 走 preprocess_gen 的 preprocess_su_buf。
+     * 若入口仍用 preprocess.o 的 C 预处理，与 preprocess.su 对 #if/#else 的行处理偶有差异，会得到「C 侧 parse_into 可见 import，
+     * 流水线内解析却得到空 module、codegen 空缓冲且 ec=0」。故在跑 parser_parse_into（及后续 collect_deps）前，对入口改用与流水线一致的 typeck_preprocess_su_buf。
+     */
+    {
+        size_t raw_su_len = 0;
+        char *raw_su = read_file(input_path, &raw_su_len);
+        if (!raw_su) {
+            fprintf(stderr, "Error: cannot re-read '%s' for .su preprocessor\n", input_path);
+            free(src);
+            return 1;
+        }
+        if (raw_su_len > (size_t)262144) {
+            fprintf(stderr, "shu: entry file too large for .su preprocessor (%zu > 262144): '%s'\n", raw_su_len,
+                input_path);
+            free(raw_su);
+            free(src);
+            return 1;
+        }
+        uint8_t su_prep_out[262144];
+        int32_t su_prep_len =
+            typeck_preprocess_su_buf((const uint8_t *)raw_su, (ptrdiff_t)raw_su_len, su_prep_out, (int32_t)sizeof(su_prep_out));
+        free(raw_su);
+        if (su_prep_len < 0) {
+            fprintf(stderr, "shu: .su preprocess failed for '%s'\n", input_path);
+            free(src);
+            return 1;
+        }
+        {
+            char *src_su = (char *)malloc((size_t)su_prep_len + 1);
+            if (!src_su) {
+                free(src);
+                return 1;
+            }
+            memcpy(src_su, su_prep_out, (size_t)su_prep_len);
+            src_su[su_prep_len] = '\0';
+            free(src);
+            src = src_su;
+            src_len = (size_t)su_prep_len;
+        }
+        /* 调试：SHU_DUMP_PREP=1 时把入口预处理后缓冲区写入 /tmp/shu_prep_entry.bin，便于与 emit 路径逐字节比对 */
+        if (getenv("SHU_DUMP_PREP")) {
+            FILE *df = fopen("/tmp/shu_prep_entry.bin", "wb");
+            if (df) {
+                fwrite(src, 1, src_len, df);
+                fclose(df);
+                fprintf(stderr, "shu: dumped prep entry (%zu bytes) to /tmp/shu_prep_entry.bin\n", src_len);
+            }
+        }
+    }
     size_t arena_sz = pipeline_sizeof_arena();
     size_t module_sz = pipeline_sizeof_module();
     void *arena = malloc(arena_sz);
@@ -4501,9 +4855,16 @@ int driver_run_compiler_full(int argc, char **argv) {
     }
     memset(arena, 0, arena_sz);
     memset(module, 0, module_sz);
-    struct shulang_slice_uint8_t src_slice = { (uint8_t *)src, src_len };
+    struct shulang_slice_uint8_t src_slice = { (uint8_t *)src, src_len }; /* 仅 diagnostics，入口解析必须与 pipeline 一致走 parse_into_buf */
+    if (src_len > (size_t)INT32_MAX) {
+        fprintf(stderr, "shu: entry source too large for parser (>%d bytes): '%s'\n", INT32_MAX, input_path);
+        free(arena);
+        free(module);
+        free(src);
+        return 1;
+    }
     parser_parse_into_init(module, arena);
-    struct parser_ParseIntoResult pr = parser_parse_into(arena, module, &src_slice);
+    struct parser_ParseIntoResult pr = parser_parse_into_buf(arena, module, (uint8_t *)src, (int32_t)src_len);
     if (pr.ok != 0) {
         fprintf(stderr, "shu: parse failed for '%s' (pr.ok=%d main_idx=%d)\n", input_path, (int)pr.ok, (int)pr.main_idx);
         { int32_t first_tok = parser_diag_token_after_collect_imports(&src_slice, module); fprintf(stderr, "shu: first_token_after_imports=%d (1=TOKEN_FUNCTION)\n", (int)first_tok); }
@@ -4516,6 +4877,11 @@ int driver_run_compiler_full(int argc, char **argv) {
     }
     parser_parse_into_set_main_index(module, pr.main_idx);
     int32_t n_imports = parser_get_module_num_imports(module);
+    if (getenv("SHU_DEBUG_PIPE"))
+        fprintf(stderr,
+                "shu: [SHU_DEBUG_PIPE] driver post-parse_into_buf num_funcs=%d n_imports=%d pr_ok=%d pr_main_idx=%d "
+                "src_len=%zu\n",
+                driver_get_module_num_funcs(module), (int)n_imports, (int)pr.ok, (int)pr.main_idx, src_len);
     char entry_dir_buf[512];
     get_entry_dir(input_path, entry_dir_buf, sizeof(entry_dir_buf));
     if (n_imports > 0)
@@ -4634,7 +5000,10 @@ int driver_run_compiler_full(int argc, char **argv) {
     driver_dep_seed_slots(dep_arenas, dep_modules, n_deps);
     codegen_set_dep_slots_for_su_pipeline((struct ASTModule **)dep_modules, (const char **)dep_paths, n_deps);
     codegen_set_preamble_has_core_option_result(1); /* preamble 已含 Option_i32/Result_i32，codegen 跳过避免重定义 */
-    /* 入口已由 C parser 解析（parser_parse_into），直接复用其 module/arena 进 pipeline，避免 .su parser 对含 import+复杂 main 的 entry 解析失败导致 num_funcs=0。 */
+    /*
+     * 入口已在 SU 预处理后用 parser_parse_into_buf 建好 module/arena，与流水线内解析路径完全一致；
+     * 不重清零、不重解析，否则会丢失 main 或未同步 lexer 状态→num_funcs=0、空 codegen。
+     */
     pctx.entry_already_parsed = 1;
     int ec = pipeline_run_su_pipeline(module, arena, src_slice.data, (size_t)src_slice.length, (void *)&out_buf, (void *)&pctx);
     driver_dep_seeded_clear_all();
@@ -4645,7 +5014,7 @@ int driver_run_compiler_full(int argc, char **argv) {
     free(module);
     free(src);
     if (ec != 0 || out_buf.len == 0) {
-        fprintf(stderr, "shu: pipeline failed for '%s'\n", input_path);
+        fprintf(stderr, "shu: pipeline failed for '%s' (ec=%d, out_len=%d)\n", input_path, ec, (int)out_buf.len);
         if (!emit_to_stdout) { fclose(cf); unlink(tmp_c); }
         return 1;
     }
@@ -4736,22 +5105,157 @@ int driver_run_compiler_full(int argc, char **argv) {
 
 /** 扫描 argv：若存在 -su -E <path> 则记下 path 及此前出现的 -L path，返回 1，否则返回 0。保留供未迁完时链接。 */
 int driver_argv_parse_su_emit_c(int argc, char **argv) {
+    char ab[512];
+    char nx[512];
     driver_su_emit_c_path = NULL;
     driver_su_emit_n_lib_roots = 0;
-    if (argc < 4 || !argv) return 0;
+    if (argc < 4 || !argv)
+        return 0;
     for (int i = 1; i < argc; i++) {
-        if (argv[i] && strcmp(argv[i], "-L") == 0 && i + 1 < argc && driver_su_emit_n_lib_roots < SU_EMIT_MAX_LIB_ROOTS) {
-            driver_su_emit_lib_roots[driver_su_emit_n_lib_roots++] = argv[i + 1];
+        if (driver_get_argv_i(argc, argv, i, ab, (int)sizeof ab) < 0)
+            continue;
+        if (strcmp(ab, "-L") == 0 && i + 1 < argc) {
+            /* 与 driver_run_compiler_full：满则仍跳过路径令牌；-L 根拷入 driver_su_emit_lib_bufs，与 driver_run_su_emit_c_set_lib 一致 */
+            int k = driver_su_emit_n_lib_roots;
+            if (k < SU_EMIT_MAX_LIB_ROOTS) {
+                int ln = driver_get_argv_i(argc, argv, i + 1, driver_su_emit_lib_bufs[k], 256);
+                if (ln < 0)
+                    return 0;
+                driver_su_emit_lib_roots[k] = driver_su_emit_lib_bufs[k];
+                driver_su_emit_n_lib_roots++;
+            }
             i++;
             continue;
         }
-        if (argv[i] && strcmp(argv[i], "-su") == 0 && i + 2 < argc && argv[i + 1] && strcmp(argv[i + 1], "-E") == 0) {
-            driver_su_emit_c_path = argv[i + 2];
+        if (strcmp(ab, "-su") == 0 && i + 2 < argc) {
+            if (driver_get_argv_i(argc, argv, i + 1, nx, (int)sizeof nx) < 0 || strcmp(nx, "-E") != 0)
+                continue;
+            if (driver_get_argv_i(argc, argv, i + 2, driver_su_emit_path_buf, (int)sizeof driver_su_emit_path_buf) < 0)
+                return 0;
+            driver_su_emit_c_path = driver_su_emit_path_buf;
             return 1;
         }
     }
     return 0;
 }
+
+#if defined(SHU_USE_SU_DRIVER) && defined(SHU_USE_SU_PIPELINE)
+/**
+ * -su -E -E-extern：用 C 前端 parse/typeck 与 C codegen 的 emit_extern 路径写 stdout。
+ * 说明：codegen_emit_dep_types_only / codegen_library_module_to_c 依赖 C ASTModule；parser_parse_into 的 .su Module 布局不同，故不能复用 su parse 结果。
+ */
+static int driver_run_su_emit_c_extern_via_cparser(const char *input_path) {
+    (void)setvbuf(stdout, NULL, _IONBF, 0);
+    size_t raw_src_len = 0;
+    char *raw_src = read_file(input_path, &raw_src_len);
+    if (!raw_src) {
+        fprintf(stderr, "Error: cannot read file '%s'\n", input_path);
+        return 1;
+    }
+    size_t src_len = 0;
+    char *src = preprocess(raw_src, raw_src_len, NULL, 0, &src_len);
+    free(raw_src);
+    if (!src) {
+        fprintf(stderr, "shu: preprocess failed for '%s'\n", input_path);
+        return 1;
+    }
+    Lexer *lex = lexer_new(src);
+    ASTModule *mod = NULL;
+    int pr = parse(lex, &mod);
+    lexer_free(lex);
+    if (pr != 0 || !mod) {
+        if (mod) ast_module_free(mod);
+        free(src);
+        fprintf(stderr, "shu: -su -E-extern parse failed for '%s'\n", input_path);
+        return 1;
+    }
+    char entry_dir_buf[512];
+    get_entry_dir(input_path, entry_dir_buf, sizeof(entry_dir_buf));
+    const char *entry_dir = entry_dir_buf;
+    const char *lib_roots_arr[SU_EMIT_MAX_LIB_ROOTS];
+    int n_lib_roots = driver_su_emit_n_lib_roots;
+    if (n_lib_roots == 0) {
+        lib_roots_arr[0] = ".";
+        n_lib_roots = 1;
+    } else {
+        for (int k = 0; k < n_lib_roots; k++)
+            lib_roots_arr[k] = driver_su_emit_lib_roots[k];
+    }
+    ASTModule *dep_mods[32];
+    ASTModule *all_dep_mods[MAX_ALL_DEPS];
+    char *all_dep_paths[MAX_ALL_DEPS];
+    int ndep = 0, n_all = 0;
+    if (mod->num_imports > 0 && resolve_and_load_imports(mod, lib_roots_arr, n_lib_roots, entry_dir, NULL, 0,
+            dep_mods, &ndep, all_dep_mods, all_dep_paths, &n_all, 32) != 0) {
+        ast_module_free(mod);
+        free(src);
+        return 1;
+    }
+    if (typeck_module(mod, ndep > 0 ? dep_mods : NULL, ndep, n_all > 0 ? all_dep_mods : NULL, n_all) != 0) {
+        while (n_all--) {
+            free(all_dep_paths[n_all]);
+            ast_module_free(all_dep_mods[n_all]);
+        }
+        ast_module_free(mod);
+        free(src);
+        fprintf(stderr, "shu: -su -E-extern typeck failed for '%s'\n", input_path);
+        return 1;
+    }
+    fprintf(stdout, "/* generated (single-file with deps) */\n");
+    fprintf(stdout, "#include <stdint.h>\n");
+    fprintf(stdout, "#include <stddef.h>\n");
+    fprintf(stdout, "#include <stdlib.h>\n");
+    fprintf(stdout, "#include <stdio.h>\n");
+    fprintf(stdout, "#include <string.h>\n");
+    fprintf(stdout, "static inline void shulang_panic_(int has_msg, int msg_val) __attribute__((noreturn, cold));\n");
+    fprintf(stdout, "static inline void shulang_panic_(int has_msg, int msg_val) {\n");
+    fprintf(stdout, "  if (has_msg) (void)fprintf(stderr, \"%%d\\n\", msg_val);\n");
+    fprintf(stdout, "  abort();\n");
+    fprintf(stdout, "}\n");
+    if (input_path && (strstr(input_path, "pipeline.su") != NULL || strstr(input_path, "parser.su") != NULL || strstr(input_path, "typeck.su") != NULL || strstr(input_path, "codegen.su") != NULL || strstr(input_path, "preprocess.su") != NULL)) {
+        fprintf(stdout, "extern int32_t shu_io_register(uint8_t *ptr, size_t len, size_t handle);\n");
+        fprintf(stdout, "extern int32_t shu_io_submit_read(uint8_t *ptr, size_t len, size_t handle, uint32_t timeout_m);\n");
+        fprintf(stdout, "extern int32_t shu_io_submit_write(uint8_t *ptr, size_t len, size_t handle, uint32_t timeout_m);\n");
+        fprintf(stdout, "typedef struct { void *ptr; size_t len; size_t handle; } shu_buffer_abi_t;\n");
+        fprintf(stdout, "static inline int32_t shu_io_register_buf(intptr_t buf) { const shu_buffer_abi_t *b = (const shu_buffer_abi_t *)(uintptr_t)buf; return shu_io_register((uint8_t *)b->ptr, b->len, b->handle); }\n");
+        fprintf(stdout, "static inline int32_t shu_io_submit_read_buf(intptr_t buf, int32_t timeout_m) { const shu_buffer_abi_t *b = (const shu_buffer_abi_t *)(uintptr_t)buf; return shu_io_submit_read((uint8_t *)b->ptr, b->len, b->handle, (uint32_t)timeout_m); }\n");
+        fprintf(stdout, "static inline int32_t shu_io_submit_write_buf(intptr_t buf, int32_t timeout_m) { const shu_buffer_abi_t *b = (const shu_buffer_abi_t *)(uintptr_t)buf; return shu_io_submit_write((uint8_t *)b->ptr, b->len, b->handle, (uint32_t)timeout_m); }\n");
+        fprintf(stdout, "typedef struct { uint8_t *ptr; size_t len; size_t handle; } shu_batch_buf_t;\n");
+        fprintf(stdout, "extern int io_register_buffers_buf_c(const shu_batch_buf_t *bufs, int nr);\n");
+        fprintf(stdout, "static inline int io_register_buffers_buf_i32(intptr_t bufs, int nr) { return io_register_buffers_buf_c((const shu_batch_buf_t *)(uintptr_t)bufs, nr); }\n");
+    }
+    int ec = 0;
+    char emitted_type_buf[128][CODEGEN_EMITTED_TYPE_NAME_MAX];
+    int n_emitted = 0;
+    const int max_emitted = (int)(sizeof(emitted_type_buf) / sizeof(emitted_type_buf[0]));
+    if (n_all > 0) {
+        if (codegen_emit_dep_types_only(all_dep_mods, (const char **)all_dep_paths, n_all, stdout) != 0)
+            ec = -1;
+    }
+    if (ec == 0) {
+        const char *lib_name = entry_lib_name_from_path(input_path);
+        if (mod->num_funcs > 0) {
+            ec = codegen_library_module_to_c(mod, lib_name, dep_mods, (const char **)mod->import_paths, ndep, stdout,
+                NULL, NULL, NULL, NULL, emitted_type_buf, &n_emitted, max_emitted, input_path);
+        } else if (mod->main_func && mod->main_func->body) {
+            ec = codegen_module_to_c(mod, stdout, dep_mods, (const char **)mod->import_paths, ndep, NULL, NULL, NULL, NULL, emitted_type_buf, &n_emitted, max_emitted);
+        } else {
+            fprintf(stderr, "shu: -su -E-extern: no main and no lib functions (cannot emit C)\n");
+            ec = -1;
+        }
+    }
+    if (ec == 0 && input_path && strstr(input_path, "pipeline.su") != NULL)
+        emit_pipeline_glue_include();
+    fflush(stdout);
+    while (n_all--) {
+        free(all_dep_paths[n_all]);
+        ast_module_free(all_dep_mods[n_all]);
+    }
+    ast_module_free(mod);
+    free(src);
+    return ec != 0 ? 1 : 0;
+}
+#endif /* SHU_USE_SU_DRIVER && SHU_USE_SU_PIPELINE */
 
 /** 执行刚解析的 -su -E（读文件、.su pipeline、写 stdout）；成功 0，失败 1。无 SHU_USE_SU_PIPELINE 时返回 1。 */
 int driver_run_su_emit_c(void) {
@@ -4762,6 +5266,14 @@ int driver_run_su_emit_c(void) {
     {
         /* 关闭 stdout 缓冲，避免重定向或管道下输出被截断（平台差异见 analysis/下一步开发分析.md §4.4） */
         (void)setvbuf(stdout, NULL, _IONBF, 0);
+#if defined(SHU_USE_SU_DRIVER) && defined(SHU_USE_SU_PIPELINE)
+        {
+            const int want_extern = driver_su_emit_c_want_extern;
+            driver_su_emit_c_want_extern = 0;
+            if (want_extern)
+                return driver_run_su_emit_c_extern_via_cparser(input_path);
+        }
+#endif
         size_t raw_src_len = 0;
         char *raw_src = read_file(input_path, &raw_src_len);
         if (!raw_src) {
@@ -4911,12 +5423,20 @@ int driver_run_su_emit_c(void) {
         } else {
             for (int j = 0; j < n_deps; j++) { free(dep_arenas[j]); free(dep_modules[j]); }
             while (n_deps > 0) { n_deps--; free(dep_sources[n_deps]); free(dep_paths[n_deps]); }
-            if (ec != 0) fprintf(stderr, "shu: -su pipeline failed\n");
+            if (ec != 0) {
+                fprintf(stderr, "shu: -su pipeline failed\n");
+            } else if (out_buf.len <= 0) {
+                /* CI / cross-host: distinguish -su -E 「只吐 0」与真失败——空缓冲视为 codegen 路径未写入 */
+                fprintf(stderr,
+                        "shu: -su -E diagnostic: pipeline ok but codegen buffer empty "
+                        "(ec=0 out_buf.len=%d); check typeck/codegen/pipeline CodegenOutBuf\n",
+                        (int)out_buf.len);
+            }
         }
         free(arena);
         free(module);
         free(src);
-        return (ec != 0) ? 1 : 0;
+        return (ec != 0 || out_buf.len <= 0) ? 1 : 0;
     }
 #else
     (void)input_path;

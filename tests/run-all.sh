@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 全量回归套件：运行所有 run-*.sh（与 compiler/Makefile 的 test 目标一致）。
 # 自举测试不跑：run-su-pipeline、run-su-multi-file、run-asm、run-without-c、run-bootstrap-verify 均不执行。
-# 入口：./tests/run-all.sh；C 版编译器由 make -C compiler 产出（不设 SHU 时用 compiler/shu）。
+# 入口：./tests/run-all.sh；不设 SHU 时 make all 后优先 export SHU=./compiler/shu-c（与 Makefile test_c 一致），避免本机 compiler/shu 为 seed 时子脚本误用 .su 路径。
 
 set -e
 cd "$(dirname "$0")/.."
@@ -14,6 +14,11 @@ else
     # 无 SHU 时默认使用 C 流水线：仅构建 all（C 版 shu），子脚本不构建 bootstrap-driver-seed
     export RUN_ALL_USE_C=1
     make -C compiler -q all 2>/dev/null || make -C compiler all
+    # 与 Makefile test_c 一致：子脚本用 shu-c 走纯 C 前端，避免本机 compiler/shu 已是
+    # bootstrap-driver-seed（链 .su pipeline）时仍当「默认 C 回归」却误走 .su typeck 失败
+    if [ -x "./compiler/shu-c" ]; then
+        export SHU=./compiler/shu-c
+    fi
 fi
 
 # 无 shu 则直接失败，避免整次跑完仍打印 all tests OK

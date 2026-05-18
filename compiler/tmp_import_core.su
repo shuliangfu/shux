@@ -1,0 +1,5 @@
+import std.io.core;
+
+function main(): i32 {
+  return 0;
+}

@@ -3,8 +3,8 @@
 # 再用 shu_asm 跑全量测试，验证「运行时不依赖 C 逻辑」。
 #
 # 用法：在仓库根目录执行 ./tests/run-without-c.sh
-# 前提：compiler 下已有 shu 与 build_tool（可先 make -C compiler && make -C compiler build-tool）。
-# 本脚本会先确保存在支持 -backend asm 的 shu（make bootstrap-driver），再执行 asm 构建。
+# 前提：compiler 下已有 shu（含 driver 或种子）与 build_tool（make -C compiler 会产出 shu+shu-c；若无 build_tool 则 make -C compiler build-tool，其仅依赖 shu-c -E）。
+# 本脚本会先确保存在支持 -backend asm 的 shu（make -C compiler bootstrap-driver），再执行 asm 构建。
 #
 # 说明：不删除任何 .c 文件；仅验证 asm 产出的 shu_asm 能通过全部测试，为日后执行第 5 步（删除 .c）做准备。
 # 见：analysis/完全自举-无C无Makefile.md §脱离对C的依赖测试。

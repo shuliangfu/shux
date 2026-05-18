@@ -1,0 +1,12 @@
+import std.io.core;
+
+enum IO_Result {
+  Ok,
+  Err,
+  Timeout,
+  Cancelled
+}
+
+function main(): i32 {
+  return 0;
+}

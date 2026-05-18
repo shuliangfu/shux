@@ -1,0 +1,13 @@
+struct Buffer {
+  ptr: *u8;
+  len: usize;
+  handle: usize;
+}
+
+function f(buffers: [4]Buffer): i32 {
+  return 0;
+}
+
+function main(): i32 {
+  return 0;
+}

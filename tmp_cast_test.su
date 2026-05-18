@@ -1,0 +1,5 @@
+function m(): i32 {
+  let fd: i32 = 1;
+  let u: usize = (fd as usize);
+  return 0;
+}

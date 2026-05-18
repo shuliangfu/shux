@@ -216,14 +216,42 @@ function enc_lea_rbp_to_rax(ctx: *platform.elf.ElfCodegenCtx, offset: i32): i32 
   return enc_u32_le(ctx, 3506438144 | (imm12 << 10) | (29 << 5) | 0);
 }
 
-/** add x0, x0, w1, uxtw #2（rax + rbx*4）。 */
+/** add x0, x0, w1, uxtw（缩放 ×1：u8[] 等；编码经 Clang 校对）。用无符号十进制与同文件 enc_load_* 魔数写法一致（typeck 对一元负字面量在此处推断为空类型）。 */
+function enc_rax_plus_rbx_scale1(ctx: *platform.elf.ElfCodegenCtx): i32 {
+  return enc_u32_le(ctx, 2334212096);
+}
+
+/** add x0, x0, w1, uxtw #2（缩放 ×4）。 */
 function enc_rax_plus_rbx_scale4(ctx: *platform.elf.ElfCodegenCtx): i32 {
-  return enc_u32_le(ctx, 2332033024);
+  return enc_u32_le(ctx, 2334214144);
+}
+
+/** add x0, x0, w1, uxtw #3（缩放 ×8）。 */
+function enc_rax_plus_rbx_scale8(ctx: *platform.elf.ElfCodegenCtx): i32 {
+  return enc_u32_le(ctx, 2334215168);
+}
+
+/** 将 w0/x0 存入 [x1]（仅偏移 0）。elem_sz：1=strb；4=str；8=str qword。*/
+function enc_store_rax_to_rbx_indirect(ctx: *platform.elf.ElfCodegenCtx, elem_sz: i32): i32 {
+  if (elem_sz == 1) {
+    return enc_u32_le(ctx, 956301344);
+  }
+  if (elem_sz == 4) {
+    /* str w0,[x1]；与 Unary 负字面量不同，用大十进制与同文件其余魔数一致。 */
+    return enc_u32_le(ctx, 3103784992);
+  }
+  /* 默认 64 位；与 str x0, [x1] 对应。 */
+  return enc_u32_le(ctx, 4177526816);
 }
 
 /** ldr w0, [x0]。 */
 function enc_load_32_from_rax(ctx: *platform.elf.ElfCodegenCtx): i32 {
   return enc_u32_le(ctx, 3103784960);
+}
+
+/** ldrb w0, [x0] — INDEX 读到 u8 时零扩展到 w0（与 Clang 生成字 0x39400000 LE 一致）。 */
+function enc_load_zext8_from_rax(ctx: *platform.elf.ElfCodegenCtx): i32 {
+  return enc_u32_le(ctx, 962592768);
 }
 
 /** add x0, x0, #imm（imm 需 12 位；0 时跳过）。 */
@@ -259,21 +287,21 @@ function enc_mov_rbx_to_rax(ctx: *platform.elf.ElfCodegenCtx): i32 {
 /** cbz w0, label；发 0x34000000，记 19 位 patch。 */
 function enc_jz(ctx: *platform.elf.ElfCodegenCtx, label: [64]u8, label_len: i32): i32 {
   if (enc_u32_le(ctx, 872415232) != 0) { return -1; }
-  let at: i32 = ctx.code.len - 4;
+  let at: i32 = ctx.code_len - 4;
   return platform.elf.elf_add_patch_with_bits(ctx, at, label, label_len, 19);
 }
 
 /** cbnz w0, label；19 位 patch。 */
 function enc_jnz(ctx: *platform.elf.ElfCodegenCtx, label: [64]u8, label_len: i32): i32 {
   if (enc_u32_le(ctx, 872415488) != 0) { return -1; }
-  let at: i32 = ctx.code.len - 4;
+  let at: i32 = ctx.code_len - 4;
   return platform.elf.elf_add_patch_with_bits(ctx, at, label, label_len, 19);
 }
 
 /** b label；26 位 patch。 */
 function enc_jmp(ctx: *platform.elf.ElfCodegenCtx, label: [64]u8, label_len: i32): i32 {
   if (enc_u32_le(ctx, 1342177280) != 0) { return -1; }
-  let at: i32 = ctx.code.len - 4;
+  let at: i32 = ctx.code_len - 4;
   return platform.elf.elf_add_patch_with_bits(ctx, at, label, label_len, 26);
 }
 
@@ -285,11 +313,11 @@ function enc_mov_rax_to_arg_reg(ctx: *platform.elf.ElfCodegenCtx, k: i32): i32 {
   return enc_u32_le(ctx, 553648224 | (rd << 5));
 }
 
-/** bl 符号；发 0x94000000，记 26 位 patch 并记 reloc。 */
+/** bl 符号；发 0x94000000 占位，仅记 reloc（不写 patch）。同 .o 外符号无 label，patch 会在 elf_resolve_patches 失败；PC 相对由链接器按 R_AARCH64_CALL26 填写，与 x86_64_enc.enc_call 一致。 */
 function enc_call(ctx: *platform.elf.ElfCodegenCtx, name: [64]u8, name_len: i32): i32 {
-  if (enc_u32_le(ctx, 2684354560) != 0) { return -1; }
-  let at: i32 = ctx.code.len - 4;
-  if (platform.elf.elf_add_patch_with_bits(ctx, at, name, name_len, 26) != 0) { return -1; }
+  /* 0x94000000：AArch64 BL 占位（原误写 0xA0000000 非 BL，链器报 BRANCH26 on non-b/bl） */
+  if (enc_u32_le(ctx, 2483027968) != 0) { return -1; }
+  let at: i32 = ctx.code_len - 4;
   return platform.elf.elf_add_reloc(ctx, at, name, name_len);
 }
 
@@ -297,7 +325,7 @@ function enc_call(ctx: *platform.elf.ElfCodegenCtx, name: [64]u8, name_len: i32)
 function enc_label(ctx: *platform.elf.ElfCodegenCtx, name: [64]u8, name_len: i32, is_func: i32): i32 {
   if (platform.elf.elf_add_label(ctx, name, name_len) != 0) { return -1; }
   if (is_func != 0) {
-    return platform.elf.elf_add_sym(ctx, name, name_len, ctx.code.len);
+    return platform.elf.elf_add_sym(ctx, name, name_len, ctx.code_len);
   }
   return 0;
 }

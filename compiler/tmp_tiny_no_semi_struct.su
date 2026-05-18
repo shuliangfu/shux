@@ -1,0 +1,7 @@
+struct Tiny {
+  a: i32
+}
+
+function poke(p: *Tiny): void {
+  p.a = 0;
+}

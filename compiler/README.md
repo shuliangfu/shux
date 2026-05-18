@@ -12,9 +12,9 @@
 
 | 场景 | 命令 |
 |------|------|
-| **首次 / 从零** | `make build-tool` 或 `make first-time`（会先产出 shu 再产出 build_tool，一条命令）。 |
+| **首次 / 从零** | `make build-tool` 或 `make first-time`（先链出 **shu-c**，再用其生成 **build_tool**；无需先有带 driver 的完整 shu）。 |
 | **日常与自举** | `./build_tool ./shu`（本目录下执行，产出 shu，不依赖 Makefile）。 |
 
-Makefile 仅作从零构建/首次；日常推荐仅用 `./build_tool ./shu`。生成 C（pipeline_gen.c / driver_gen.c）后无补丁，由 runtime/codegen 从根源产出。验收：仓库根执行 `./tests/run-all.sh`。
+Makefile 仅作从零构建/首次；`make all` 默认同时产出 **shu** 与 **shu-c**。日常推荐仅用 `./build_tool ./shu`。生成 C（pipeline_gen.c / driver_gen.c）后无补丁，由 runtime/codegen 从根源产出。验收：仓库根执行 `./tests/run-all.sh`。
 
 详见项目根目录下 `analysis/architecture.md` 第三章「编译器架构」。

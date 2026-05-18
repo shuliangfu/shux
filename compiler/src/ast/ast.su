@@ -79,7 +79,9 @@ enum ExprKind {
   EXPR_METHOD_CALL,
   EXPR_ENUM_VARIANT,
   /** 通用二元运算占位（parser 在 parse_into_buf 中先用 BINOP 再细分；与 EXPR_ADD/EXPR_MUL 等并存） */
-  EXPR_BINOP
+  EXPR_BINOP,
+  /** 类型转换 expr as type（operand + 目标类型在类型池） */
+  EXPR_AS
 }
 
 /** 类型节点：kind + 具名类型名（NAMED 时）+ 元素类型下标（PTR/ARRAY/SLICE/VECTOR 时）+ 数组长度（ARRAY/VECTOR 时） */
@@ -151,6 +153,9 @@ allow(padding) struct Expr {
   float_bits_hi: i32;
   /** EXPR_ENUM_VARIANT：变体 tag（0-based 序号），由 typeck 填写，asm 用于 ret 或比较。 */
   enum_variant_tag: i32;
+  /** EXPR_AS：被转换表达式池下标 + 目标类型池下标。 */
+  as_operand_ref: i32;
+  as_target_type_ref: i32;
 }
 
 /** 常量声明：名称 + 类型池下标 + 初值表达式池下标 */
@@ -183,7 +188,13 @@ struct ForLoop {
   body_ref: i32;
 }
 
-/** 块内语句顺序项：kind 0=const, 1=let, 2=expr_stmt, 3=loop, 4=for；idx 为对应数组下标 */
+/** 单条 if 语句：条件表达式池下标 + then 分支块池下标（须为 `{ ... }` 块，无 else 子句）。 */
+struct IfStmt {
+  cond_ref: i32;
+  then_body_ref: i32;
+}
+
+/** 块内语句顺序项：kind 0=const, 1=let, 2=expr_stmt, 3=loop, 4=for, 5=if；idx 为对应数组下标 */
 allow(padding) struct StmtOrderItem {
   kind: u8;
   idx: i32;
@@ -199,7 +210,7 @@ struct LabeledStmt {
   return_expr_ref: i32;
 }
 
-/** 块：const/let 声明 + while/for + defer 块 + 标签语句 + 表达式语句 + 最终表达式 + stmt_order */
+/** 块：const/let 声明 + while/for/if + defer 块 + 标签语句 + 表达式语句 + 最终表达式 + stmt_order */
 struct Block {
   const_decls: [128]ConstDecl;
   num_consts: i32;
@@ -210,6 +221,9 @@ struct Block {
   num_loops: i32;
   for_loops: [8]ForLoop;
   num_for_loops: i32;
+  /** 块内链式 if(cond){ block }（最多 16 条），与 stmt_order kind=5 对应 */
+  if_stmts: [16]IfStmt;
+  num_if_stmts: i32;
   defer_block_refs: [8]i32;
   num_defers: i32;
   labeled_stmts: [8]LabeledStmt;
@@ -241,14 +255,15 @@ struct Func {
   is_extern: i32;
 }
 
-/** 结构体布局（用于 typeck 填 field_access_offset）：名称 + 最多 8 个字段名与偏移；偏移按 8 字节对齐。 */
+/** 结构体布局（用于 typeck 填 field_access_offset / 字段类型）：名称 + 最多 24 个字段名与偏移；偏移按 8 字节步进（与解析器占位一致）；field_type_refs 为 arena 中 Type 池下标。 */
 struct StructLayout {
   name: [64]u8;
   name_len: i32;
   num_fields: i32;
-  field_names: [8][64]u8;
-  field_lens: [8]i32;
-  field_offsets: [8]i32;
+  field_names: [24][64]u8;
+  field_lens: [24]i32;
+  field_offsets: [24]i32;
+  field_type_refs: [24]i32;
 }
 
 /** import 种类：与 C 的 AST_IMPORT_KIND_* 一致，供 parser/codegen 使用 */
@@ -290,7 +305,8 @@ struct Module {
 allow(padding) struct ASTArena {
   types: [512]Type;
   num_types: i32;
-  exprs: [4096]Expr;
+  /** 大块单模块（backend.su/parser.su）易超旧 4096；与 ast_arena_expr_alloc 上限须一致 */
+  exprs: [8192]Expr;
   num_exprs: i32;
   blocks: [512]Block;
   num_blocks: i32;
@@ -377,9 +393,9 @@ function ast_arena_type_alloc(arena: *ASTArena): i32 {
   return arena.num_types;
 }
 
-/** 在 Expr 池中分配一个槽位，返回 1-based ref；已满（4096）时返回 0。 */
+/** 在 Expr 池中分配一个槽位，返回 1-based ref；已满（8192）时返回 0。须与 ASTArena.exprs 长度一致。 */
 function ast_arena_expr_alloc(arena: *ASTArena): i32 {
-  if (arena.num_exprs >= 4096) {
+  if (arena.num_exprs >= 8192) {
     return 0;
   }
   arena.num_exprs = arena.num_exprs + 1;
@@ -399,14 +415,17 @@ function ast_arena_block_alloc(arena: *ASTArena): i32 {
 function ast_arena_type_get(arena: *ASTArena, ref: i32): Type {
   if (ref <= 0) {
     let empty_name: [64]u8 = [];
-    return Type { kind: TypeKind.TYPE_I32, name: empty_name, name_len: 0, elem_type_ref: 0, array_size: 0 };
+    /* TYPE_I32 为 TypeKind 首项判别式 0；.su pipeline 不解析 Enum.VARIANT 限定名（见 token.su token_is_eof 注释）。 */
+    return Type { kind: (0 as TypeKind), name: empty_name, name_len: 0, elem_type_ref: 0, array_size: 0 };
   }
-  return arena.types[ref - 1];
+  let idx: i32 = ref - 1;
+  return arena.types[idx];
 }
 
 /** 将 Type 节点写回池中 ref 槽位；ref 须为 1..num_types。用于 parser 构建 AST。 */
 function ast_arena_type_set(arena: *ASTArena, ref: i32, t: Type): void {
-  arena.types[ref - 1] = t;
+  let idx: i32 = ref - 1;
+  arena.types[idx] = t;
 }
 
 /** 将 Expr 的 match 每臂数组与 enum_variant_tag 置 0，供 parser 在构建任意 Expr 时调用，避免未初始化。 */
@@ -424,22 +443,311 @@ function expr_init_match_enum(e: *Expr): void {
 
 /** 按 ref 取 Expr 池中节点（副本）；ref 须为 1..num_exprs。 */
 function ast_arena_expr_get(arena: *ASTArena, ref: i32): Expr {
-  return arena.exprs[ref - 1];
+  /* 须先令 idx = ref - 1 再下标：写成 arena.exprs[ref - 1] 时，解析器会在 ] 之后把「- 1」收成二元减法（等价 arena.exprs[ref] - 1），导致 typeck/codegen 错误。 */
+  let idx: i32 = ref - 1;
+  return arena.exprs[idx];
 }
 
 /** 将 Expr 节点写回池中 ref 槽位；ref 须为 1..num_exprs。用于 parser 构建 AST。 */
 function ast_arena_expr_set(arena: *ASTArena, ref: i32, e: Expr): void {
-  arena.exprs[ref - 1] = e;
+  let idx: i32 = ref - 1;
+  arena.exprs[idx] = e;
 }
 
 /** 按 ref 取 Block 池中节点（副本）；ref 须为 1..num_blocks。 */
 function ast_arena_block_get(arena: *ASTArena, ref: i32): Block {
-  return arena.blocks[ref - 1];
+  let idx: i32 = ref - 1;
+  return arena.blocks[idx];
+}
+
+/** 两段字节名字是否相等；供 ast 模块内解析块绑定，不复用 typeck 的 name_equal。 */
+function ast_name_bytes_equal(a_nm: *u8, a_len: i32, b_nm: *u8, b_len: i32): bool {
+  if (a_len != b_len || a_len <= 0) {
+    return false;
+  }
+  let j: i32 = 0;
+  while (j < a_len) {
+    if (a_nm[j] != b_nm[j]) {
+      return false;
+    }
+    j = j + 1;
+  }
+  return true;
+}
+
+/** 取块池中某块的 final_expr_ref（无尾表达式时为 0）；封装在 ast 内避免 import 模块对 Block 做字段访问（其 struct_layout 常未含 Block）。 */
+function ast_block_final_expr_ref(a: *ASTArena, body_ref: i32): i32 {
+  if (body_ref <= 0 || body_ref > a.num_blocks) {
+    return 0;
+  }
+  let blk: Block = ast_arena_block_get(a, body_ref);
+  return blk.final_expr_ref;
+}
+
+/**
+ * SU 无法用局部 Expr 安全读取 expr.kind；由 pipeline_glue.c 实现该裸 C 符号（无前缀，
+ * preamble 与原样 extern 对齐，避免 import 前缀叠层）。
+ */
+extern function implicit_tail_expr_disallowed_by_glue(a: *ASTArena, expr_ref: i32): bool;
+
+/** 末表达式若为 RETURN/PANIC/BREAK/CONTINUE，则不允许隐式尾返回；委托 glue。 */
+function ast_expr_disallows_implicit_tail(a: *ASTArena, expr_ref: i32): bool {
+  return implicit_tail_expr_disallowed_by_glue(a, expr_ref);
+}
+
+function ast_block_num_consts(a: *ASTArena, br: i32): i32 {
+  if (br <= 0 || br > a.num_blocks) {
+    return 0;
+  }
+  /** shu-c 不能在 return 上对函数返回值再做 .field，须先绑到局部 Block。 */
+  let blk_nc: Block = ast_arena_block_get(a, br);
+  return blk_nc.num_consts;
+}
+
+function ast_block_num_lets(a: *ASTArena, br: i32): i32 {
+  if (br <= 0 || br > a.num_blocks) {
+    return 0;
+  }
+  let blk_nl: Block = ast_arena_block_get(a, br);
+  return blk_nl.num_lets;
+}
+
+function ast_block_num_loops(a: *ASTArena, br: i32): i32 {
+  if (br <= 0 || br > a.num_blocks) {
+    return 0;
+  }
+  let blk_nlp: Block = ast_arena_block_get(a, br);
+  return blk_nlp.num_loops;
+}
+
+function ast_block_num_for_loops(a: *ASTArena, br: i32): i32 {
+  if (br <= 0 || br > a.num_blocks) {
+    return 0;
+  }
+  let blk_nfp: Block = ast_arena_block_get(a, br);
+  return blk_nfp.num_for_loops;
+}
+
+function ast_block_num_if_stmts(a: *ASTArena, br: i32): i32 {
+  if (br <= 0 || br > a.num_blocks) {
+    return 0;
+  }
+  let blk_nif: Block = ast_arena_block_get(a, br);
+  return blk_nif.num_if_stmts;
+}
+
+function ast_block_num_expr_stmts(a: *ASTArena, br: i32): i32 {
+  if (br <= 0 || br > a.num_blocks) {
+    return 0;
+  }
+  let blk_nes: Block = ast_arena_block_get(a, br);
+  return blk_nes.num_expr_stmts;
+}
+
+function ast_block_num_stmt_order(a: *ASTArena, br: i32): i32 {
+  if (br <= 0 || br > a.num_blocks) {
+    return 0;
+  }
+  let blk_nso: Block = ast_arena_block_get(a, br);
+  return blk_nso.num_stmt_order;
+}
+
+function ast_block_stmt_order_kind(a: *ASTArena, br: i32, si: i32): u8 {
+  if (br <= 0 || br > a.num_blocks || si < 0) {
+    return 0 as u8;
+  }
+  let blk: Block = ast_arena_block_get(a, br);
+  if (si >= blk.num_stmt_order || si >= 96) {
+    return 0 as u8;
+  }
+  return blk.stmt_order[si].kind;
+}
+
+function ast_block_stmt_order_idx(a: *ASTArena, br: i32, si: i32): i32 {
+  if (br <= 0 || br > a.num_blocks || si < 0) {
+    return 0;
+  }
+  let blk: Block = ast_arena_block_get(a, br);
+  if (si >= blk.num_stmt_order || si >= 96) {
+    return 0;
+  }
+  return blk.stmt_order[si].idx;
+}
+
+function ast_block_const_init_ref(a: *ASTArena, br: i32, ci: i32): i32 {
+  if (br <= 0 || br > a.num_blocks || ci < 0 || ci >= 128) {
+    return 0;
+  }
+  let blk: Block = ast_arena_block_get(a, br);
+  if (ci >= blk.num_consts) {
+    return 0;
+  }
+  return blk.const_decls[ci].init_ref;
+}
+
+function ast_block_const_type_ref(a: *ASTArena, br: i32, ci: i32): i32 {
+  if (br <= 0 || br > a.num_blocks || ci < 0 || ci >= 128) {
+    return 0;
+  }
+  let blk: Block = ast_arena_block_get(a, br);
+  if (ci >= blk.num_consts) {
+    return 0;
+  }
+  return blk.const_decls[ci].type_ref;
+}
+
+function ast_block_let_init_ref(a: *ASTArena, br: i32, li: i32): i32 {
+  if (br <= 0 || br > a.num_blocks || li < 0 || li >= 128) {
+    return 0;
+  }
+  let blk: Block = ast_arena_block_get(a, br);
+  if (li >= blk.num_lets) {
+    return 0;
+  }
+  return blk.let_decls[li].init_ref;
+}
+
+function ast_block_let_type_ref(a: *ASTArena, br: i32, li: i32): i32 {
+  if (br <= 0 || br > a.num_blocks || li < 0 || li >= 128) {
+    return 0;
+  }
+  let blk: Block = ast_arena_block_get(a, br);
+  if (li >= blk.num_lets) {
+    return 0;
+  }
+  return blk.let_decls[li].type_ref;
+}
+
+function ast_block_expr_stmt_ref(a: *ASTArena, br: i32, ei: i32): i32 {
+  if (br <= 0 || br > a.num_blocks || ei < 0 || ei >= 32) {
+    return 0;
+  }
+  let blk: Block = ast_arena_block_get(a, br);
+  if (ei >= blk.num_expr_stmts) {
+    return 0;
+  }
+  return blk.expr_stmt_refs[ei];
+}
+
+function ast_block_while_cond_ref(a: *ASTArena, br: i32, wi: i32): i32 {
+  if (br <= 0 || br > a.num_blocks || wi < 0 || wi >= 8) {
+    return 0;
+  }
+  let blk: Block = ast_arena_block_get(a, br);
+  if (wi >= blk.num_loops) {
+    return 0;
+  }
+  return blk.loops[wi].cond_ref;
+}
+
+function ast_block_while_body_ref(a: *ASTArena, br: i32, wi: i32): i32 {
+  if (br <= 0 || br > a.num_blocks || wi < 0 || wi >= 8) {
+    return 0;
+  }
+  let blk: Block = ast_arena_block_get(a, br);
+  if (wi >= blk.num_loops) {
+    return 0;
+  }
+  return blk.loops[wi].body_ref;
+}
+
+function ast_block_for_init_ref(a: *ASTArena, br: i32, fi: i32): i32 {
+  if (br <= 0 || br > a.num_blocks || fi < 0 || fi >= 8) {
+    return 0;
+  }
+  let blk: Block = ast_arena_block_get(a, br);
+  if (fi >= blk.num_for_loops) {
+    return 0;
+  }
+  return blk.for_loops[fi].init_ref;
+}
+
+function ast_block_for_cond_ref(a: *ASTArena, br: i32, fi: i32): i32 {
+  if (br <= 0 || br > a.num_blocks || fi < 0 || fi >= 8) {
+    return 0;
+  }
+  let blk: Block = ast_arena_block_get(a, br);
+  if (fi >= blk.num_for_loops) {
+    return 0;
+  }
+  return blk.for_loops[fi].cond_ref;
+}
+
+function ast_block_for_step_ref(a: *ASTArena, br: i32, fi: i32): i32 {
+  if (br <= 0 || br > a.num_blocks || fi < 0 || fi >= 8) {
+    return 0;
+  }
+  let blk: Block = ast_arena_block_get(a, br);
+  if (fi >= blk.num_for_loops) {
+    return 0;
+  }
+  return blk.for_loops[fi].step_ref;
+}
+
+function ast_block_for_body_ref(a: *ASTArena, br: i32, fi: i32): i32 {
+  if (br <= 0 || br > a.num_blocks || fi < 0 || fi >= 8) {
+    return 0;
+  }
+  let blk: Block = ast_arena_block_get(a, br);
+  if (fi >= blk.num_for_loops) {
+    return 0;
+  }
+  return blk.for_loops[fi].body_ref;
+}
+
+function ast_block_if_cond_ref(a: *ASTArena, br: i32, ii: i32): i32 {
+  if (br <= 0 || br > a.num_blocks || ii < 0 || ii >= 16) {
+    return 0;
+  }
+  let blk: Block = ast_arena_block_get(a, br);
+  if (ii >= blk.num_if_stmts) {
+    return 0;
+  }
+  return blk.if_stmts[ii].cond_ref;
+}
+
+function ast_block_if_then_body_ref(a: *ASTArena, br: i32, ii: i32): i32 {
+  if (br <= 0 || br > a.num_blocks || ii < 0 || ii >= 16) {
+    return 0;
+  }
+  let blk: Block = ast_arena_block_get(a, br);
+  if (ii >= blk.num_if_stmts) {
+    return 0;
+  }
+  return blk.if_stmts[ii].then_body_ref;
+}
+
+/**
+ * 在块内按 const/let 顺序解析局部名到类型池 ref；供 import ast 的模块避免 materialize Block 再取字段（无 StructLayout）。
+ */
+function ast_block_resolve_var_to_type_ref(a: *ASTArena, block_ref: i32, vname: *u8, vlen: i32): i32 {
+  if (block_ref <= 0 || block_ref > a.num_blocks) {
+    return 0;
+  }
+  let blk: Block = ast_arena_block_get(a, block_ref);
+  let i: i32 = 0;
+  while (i < blk.num_consts && i < 64) {
+    let cd: ConstDecl = blk.const_decls[i];
+    if (!ref_is_null(cd.type_ref) && ast_name_bytes_equal(&cd.name[0], cd.name_len, vname, vlen)) {
+      return cd.type_ref;
+    }
+    i = i + 1;
+  }
+  i = 0;
+  while (i < blk.num_lets && i < 64) {
+    let ld: LetDecl = blk.let_decls[i];
+    if (!ref_is_null(ld.type_ref) && ast_name_bytes_equal(&ld.name[0], ld.name_len, vname, vlen)) {
+      return ld.type_ref;
+    }
+    i = i + 1;
+  }
+  return 0;
 }
 
 /** 将 Block 节点写回池中 ref 槽位；ref 须为 1..num_blocks。用于 parser 构建 AST。 */
 function ast_arena_block_set(arena: *ASTArena, ref: i32, b: Block): void {
-  arena.blocks[ref - 1] = b;
+  let idx: i32 = ref - 1;
+  arena.blocks[idx] = b;
 }
 
 /** 在 Func 池中分配一个槽位，返回 1-based ref；已满（256）时返回 0。供 parse_into_buf 使用。 */
@@ -453,10 +761,12 @@ function ast_arena_func_alloc(arena: *ASTArena): i32 {
 
 /** 按 ref 取 Func 池中节点（副本）；ref 须为 1..num_funcs。 */
 function ast_arena_func_get(arena: *ASTArena, ref: i32): Func {
-  return arena.funcs[ref - 1];
+  let idx: i32 = ref - 1;
+  return arena.funcs[idx];
 }
 
 /** 将 Func 节点写回池中 ref 槽位；ref 须为 1..num_funcs。用于 parser 构建 AST。 */
 function ast_arena_func_set(arena: *ASTArena, ref: i32, f: Func): void {
-  arena.funcs[ref - 1] = f;
+  let idx: i32 = ref - 1;
+  arena.funcs[idx] = f;
 }

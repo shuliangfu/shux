@@ -39,12 +39,19 @@ jobs:
             echo "::error::compiler/shu not found or not executable (Build compiler step did not produce it)"
             exit 1
           fi
+          if [ ! -f compiler/shu-c ] || [ ! -x compiler/shu-c ]; then
+            echo "::error::compiler/shu-c not found (make all should produce shu-c alongside shu)"
+            exit 1
+          fi
       - name: Run C test suite (make test_c)
         run: make -C compiler test_c
         timeout-minutes: 20
       - name: Run .su test suite (make test_su)
         run: make -C compiler test_su
         timeout-minutes: 25
+      - name: Goal 2 asm build script (build_shu_asm.sh)
+        run: cd compiler && SHU=./shu ./scripts/build_shu_asm.sh
+        timeout-minutes: 12
       - name: Bootstrap verify (shu1 -> shu2, both run run-all)
         run: make -C compiler bootstrap-verify
         timeout-minutes: 25
@@ -60,6 +67,27 @@ jobs:
             [ -f "$f" ] || continue
             echo "--- $f ---" && head -120 "$f" && echo ""
           done
+
+  linux-asm-smoke:
+    name: Linux asm smoke (bootstrap-driver + run-asm)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+      - name: Install dependencies (liburing, zlib, brotli — 与主编译 job 对齐)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq liburing-dev zlib1g-dev libbrotli-dev
+      - name: Build compiler (shu + shu-c)
+        run: make -C compiler OPT=1 all
+        env:
+          CC: cc
+      - name: Produce asm-capable shu (Goal 2)
+        run: make -C compiler bootstrap-driver
+        env:
+          CC: cc
+        timeout-minutes: 15
+      - name: Run asm regression script (forces CI path)
+        run: SHU_CI_FORCE_ASM=1 ./tests/run-asm.sh
+        timeout-minutes: 12
 
   linux-arm64:
     name: Linux (ARM64)
@@ -83,12 +111,19 @@ jobs:
             echo "::error::compiler/shu not found or not executable (Build compiler step did not produce it)"
             exit 1
           fi
+          if [ ! -f compiler/shu-c ] || [ ! -x compiler/shu-c ]; then
+            echo "::error::compiler/shu-c not found (make all should produce shu-c alongside shu)"
+            exit 1
+          fi
       - name: Run C test suite (make test_c)
         run: make -C compiler test_c
         timeout-minutes: 20
       - name: Run .su test suite (make test_su)
         run: make -C compiler test_su
         timeout-minutes: 25
+      - name: Goal 2 asm build script (build_shu_asm.sh)
+        run: cd compiler && SHU=./shu ./scripts/build_shu_asm.sh
+        timeout-minutes: 12
       - name: Bootstrap verify (shu1 -> shu2, both run run-all)
         run: make -C compiler bootstrap-verify
         timeout-minutes: 25
@@ -127,12 +162,19 @@ jobs:
             echo "::error::compiler/shu not found or not executable (Build compiler step did not produce it)"
             exit 1
           fi
+          if [ ! -f compiler/shu-c ] || [ ! -x compiler/shu-c ]; then
+            echo "::error::compiler/shu-c not found (make all should produce shu-c alongside shu)"
+            exit 1
+          fi
       - name: Run C test suite (make test_c)
         run: make -C compiler test_c
         timeout-minutes: 20
       - name: Run .su test suite (make test_su)
         run: make -C compiler test_su
         timeout-minutes: 25
+      - name: Goal 2 asm build script (build_shu_asm.sh)
+        run: cd compiler && SHU=./shu ./scripts/build_shu_asm.sh
+        timeout-minutes: 12
       - name: Bootstrap verify (shu1 -> shu2, both run run-all)
         run: make -C compiler bootstrap-verify
         timeout-minutes: 25
@@ -173,6 +215,10 @@ jobs:
             echo "::error::compiler/shu not found or not executable (Build compiler step did not produce it)"
             exit 1
           fi
+          if [ ! -f compiler/shu-c ] || [ ! -x compiler/shu-c ]; then
+            echo "::error::compiler/shu-c not found (make all should produce shu-c alongside shu)"
+            exit 1
+          fi
         shell: msys2 {0}
       - name: Run C test suite (make test_c)
         run: make -C compiler test_c
@@ -184,6 +230,12 @@ jobs:
         run: make -C compiler test_su
         shell: msys2 {0}
         timeout-minutes: 25
+        env:
+          CI: "1"
+      - name: Goal 2 asm build script (build_shu_asm.sh)
+        run: cd compiler && SHU=./shu ./scripts/build_shu_asm.sh
+        shell: msys2 {0}
+        timeout-minutes: 12
         env:
           CI: "1"
       - name: Bootstrap verify (shu1 -> shu2, both run run-all)

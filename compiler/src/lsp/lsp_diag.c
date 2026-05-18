@@ -5,11 +5,10 @@
  * lsp_build_diagnostics_response 对源码跑 C parser，收集错误，生成完整 JSON-RPC 响应正文。
  * 高性能：仅在此入口跑一次解析，不依赖 .su pipeline，无 arena 分配。
  *
- * 为何保留为 C：本文件是 C 前端的 LSP 桥接层，直接调用 parser/lexer/typeck/ast 的 C API
- *（parse、typeck_module、ast_module_free、Lexer 与 ASTModule 指针等），且 typeck 会回调
- * lsp_diag_report_typeck(va_list)。迁到 .su 需在 .su 中声明大量 C 结构体与函数并保证 ABI 一致，
- * 以及 C 可变参互操作；当前编译器主体仍为 C，故此处保留 C 更稳妥。待 parser/typeck 迁 .su 后，
- * 可再考虑将本层一并迁入 .su。
+ * 纯 JSON 外壳（initialize_result、response_with_result）可迁到 lsp.su，但默认 shu 的 OBJS 未链 lsp_su/io
+ *（无 std io/heap），lsp_diag 仍须在本文件提供这些符号；自举目标（shu-su）链 lsp_gen 后可再拆。
+ *
+ * 为何大量逻辑仍保留为 C：直接调用 parser/lexer/typeck/ast 的 C API 与可变参 typeck 回调；迁 .su 见 docs/完全去掉C与H-前置清单.md §2。
  */
 
 #include "lsp/lsp_diag.h"
